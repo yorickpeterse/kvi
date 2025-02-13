@@ -1,0 +1,76 @@
+import std.cmp (Compare, Ordering)
+import std.int (ToInt)
+import std.stdio (Stderr)
+import std.string (ToString)
+
+# The minimum level/type of message to log.
+type copy enum Level {
+  case None
+  case Info
+  case Warning
+  case Error
+}
+
+impl ToInt for Level {
+  fn pub inline to_int -> Int {
+    match self {
+      case None -> 0
+      case Info -> 1
+      case Warning -> 2
+      case Error -> 3
+    }
+  }
+}
+
+impl ToString for Level {
+  fn pub inline to_string -> String {
+    match self {
+      case None -> ''
+      case Info -> 'INFO'
+      case Warning -> 'WARN'
+      case Error -> 'ERROR'
+    }
+  }
+}
+
+impl Compare for Level {
+  fn pub inline cmp(other: Level) -> Ordering {
+    to_int.cmp(other.to_int)
+  }
+}
+
+# A process for logging output to STDERR.
+type async Logger {
+  let @output: Stderr
+  let @level: Level
+
+  # Returns a `Logger` that logs any kind of message.
+  fn static new -> Logger {
+    Logger(output: recover Stderr.new, level: Level.Info)
+  }
+
+  # Returns a `Logger` that doesn't log any messages.
+  fn static disabled -> Logger {
+    Logger(output: recover Stderr.new, level: Level.None)
+  }
+
+  fn async mut info(message: String) {
+    write(Level.Info, message)
+  }
+
+  fn async mut warn(message: String) {
+    write(Level.Info, message)
+  }
+
+  fn async mut error(message: String) {
+    write(Level.Error, message)
+  }
+
+  fn mut write(level: Level, message: String) {
+    if @level < level { return }
+
+    # Logging failures aren't a big deal and probably won't happen anyway, so we
+    # ignore them.
+    let _ = @output.write_string('${level}: ${message}\n')
+  }
+}

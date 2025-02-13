@@ -1,0 +1,30 @@
+---
+name: Push
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/inko-lang/inko:main
+    steps:
+      - run: microdnf install --quiet --assumeyes tar git
+      - uses: actions/checkout@v4
+      - run: inko --version
+      - run: inko fmt --check
+
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/inko-lang/inko:main
+    steps:
+      - run: microdnf install --quiet --assumeyes tar git
+      - uses: actions/checkout@v4
+      - run: inko --version
+      - run: inko test

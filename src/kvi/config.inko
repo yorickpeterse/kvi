@@ -1,0 +1,104 @@
+import kvi.num (NonZeroInt)
+import std.clone (Clone)
+import std.net.ip (IpAddress)
+import std.sys (cpu_cores)
+
+# A type holding various configuration settings the user can adjust, such as the
+# IP address to bind to.
+type Config {
+  # The IP addresses to bind to.
+  #
+  # The default is 0.0.0.0.
+  let mut @ips: Array[IpAddress]
+
+  # The port number to bind to.
+  #
+  # The default is 20252.
+  let mut @port: NonZeroInt
+
+  # The number of shards to use.
+  #
+  # This defaults to the number of CPU cores.
+  let mut @shards: NonZeroInt
+
+  # The number of processes to use for listening for and handling incoming
+  # connections.
+  #
+  # This defaults to the number of CPU cores. When binding to multiple IP
+  # addresses, the total number of processes is the number of IPs times the
+  # value of this setting.
+  let mut @listeners: NonZeroInt
+
+  # The fragmentation percentage (1-100) to allow before defragmentation is
+  # necessary.
+  #
+  # The default is 10%.
+  let mut @fragmentation: NonZeroInt
+
+  fn static new -> Config {
+    Config(
+      ips: [IpAddress.v4(0, 0, 0, 0)],
+      port: NonZeroInt.new(2025_2),
+      shards: NonZeroInt.new(cpu_cores),
+      listeners: NonZeroInt.new(cpu_cores),
+      fragmentation: NonZeroInt.new(10),
+    )
+  }
+
+  fn mut parse_ips(values: Array[String]) -> Result[Nil, String] {
+    @ips = try Result.collect(
+      values.into_iter.map(fn (v) {
+        IpAddress.parse(v).ok_or_else(fn { "the IP '${v}' is invalid" })
+      }),
+    )
+    Result.Ok(nil)
+  }
+
+  fn mut parse_port(value: String) -> Result[Nil, String] {
+    match NonZeroInt.from_decimal_string(value) {
+      case Some(p) -> @port = p
+      case _ -> throw "the port number '${value}' is invalid"
+    }
+
+    Result.Ok(nil)
+  }
+
+  fn mut parse_shards(value: String) -> Result[Nil, String] {
+    match NonZeroInt.from_decimal_string(value) {
+      case Some(p) -> @shards = p
+      case _ -> throw "'${value}' is an invalid number of shards"
+    }
+
+    Result.Ok(nil)
+  }
+
+  fn mut parse_listeners(value: String) -> Result[Nil, String] {
+    match NonZeroInt.from_decimal_string(value) {
+      case Some(p) -> @listeners = p
+      case _ -> throw "'${value}' is an invalid number of listeners"
+    }
+
+    Result.Ok(nil)
+  }
+
+  fn mut parse_fragmentation(value: String) -> Result[Nil, String] {
+    match NonZeroInt.from_decimal_string(value) {
+      case Some(p) if p.to_int <= 100 -> @fragmentation = p
+      case _ -> throw "'${value}' is an invalid fragmentation threshold"
+    }
+
+    Result.Ok(nil)
+  }
+}
+
+impl Clone for Config {
+  fn pub clone -> Config {
+    Config(
+      ips: @ips.clone,
+      port: @port,
+      shards: @shards,
+      listeners: @listeners,
+      fragmentation: @fragmentation,
+    )
+  }
+}

@@ -1,0 +1,38 @@
+import std.int (Format, ToInt)
+
+fn zero_error(value: Int) -> Never {
+  panic('expected ${value} to be greater than zero')
+}
+
+# An `Int` value that's always greater than zero.
+type copy NonZeroInt {
+  let @inner: Int
+
+  # Returns a new `NonZeroInt` from the given `Int`.
+  #
+  # # Panics
+  #
+  # This method panics if `value` is not greater than zero.
+  fn inline static new(value: Int) -> NonZeroInt {
+    if value <= 0 { zero_error(value) }
+
+    NonZeroInt(value)
+  }
+
+  # Parses a `NonZeroInt` from a decimal string.
+  #
+  # If the input is valid, the parsed value is wrapped in an `Option.Some`. If
+  # the value is invalid, an `Option.None` is returned instead.
+  fn static from_decimal_string(string: String) -> Option[NonZeroInt] {
+    match Int.parse(string, Format.Decimal) {
+      case Some(v) if v > 0 -> Option.Some(NonZeroInt(v))
+      case _ -> Option.None
+    }
+  }
+}
+
+impl ToInt for NonZeroInt {
+  fn pub inline to_int -> Int {
+    @inner
+  }
+}

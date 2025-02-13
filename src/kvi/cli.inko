@@ -1,0 +1,83 @@
+import kvi.config (Config)
+import kvi.logger (Logger)
+import kvi.server (Server)
+import std.fs.path (Path)
+import std.io (Write)
+import std.optparse (Help, Options)
+
+let VERSION = '0.1.0'
+
+fn show_help[W: mut + Write](options: ref Options, output: mut W) {
+  let help = Help
+    .new('kvi')
+    .usage('[OPTIONS]')
+    .section('Options')
+    .options(options)
+    .to_string
+
+  output.write_string(help).get
+}
+
+fn pub run[W: mut + Write](
+  arguments: Array[String],
+  working_directory: Path,
+  stdout: mut W,
+) -> Result[Nil, String] {
+  let opts = Options.new
+
+  opts.flag('h', 'help', 'Show this help message')
+  opts.flag('v', 'version', 'Show the version')
+  opts.multiple('i', 'ip', 'IP', 'The IP addresses to bind to')
+  opts.single('p', 'port', 'INT', 'The port number to bind to')
+  opts.single('s', 'shards', 'INT', 'The number of shards to use')
+  opts.single('l', 'listeners', 'INT', 'The number of parallel listeners')
+  opts.single(
+    'f',
+    'fragmentation',
+    'INT',
+    'The fragmentation percentage before defragmentation is needed',
+  )
+
+  let matches = match opts.parse(arguments) {
+    case Ok(v) -> v
+    case Error(e) -> throw e.to_string
+  }
+
+  if matches.contains?('help') {
+    show_help(opts, stdout)
+    return Result.Ok(nil)
+  }
+
+  if matches.contains?('version') {
+    stdout.print('kvi ${VERSION}').get
+    return Result.Ok(nil)
+  }
+
+  let conf = Config.new
+
+  if matches.contains?('ip') { try conf.parse_ips(matches.values('ip')) }
+
+  match matches.value('port') {
+    case Some(v) -> try conf.parse_port(v)
+    case _ -> {}
+  }
+
+  match matches.value('shards') {
+    case Some(v) -> try conf.parse_shards(v)
+    case _ -> {}
+  }
+
+  match matches.value('listeners') {
+    case Some(v) -> try conf.parse_listeners(v)
+    case _ -> {}
+  }
+
+  match matches.value('fragmentation') {
+    case Some(v) -> try conf.parse_fragmentation(v)
+    case _ -> {}
+  }
+
+  let logger = Logger.new
+
+  Server.new(conf, logger).start
+}

@@ -1,0 +1,81 @@
+import kvi.config (Config)
+import kvi.logger (Logger)
+import std.net.socket (TcpServer)
+
+type async Listener {
+  let @config: Config
+  let @logger: Logger
+  let @socket: TcpServer
+
+  fn static new(
+    config: ref Config,
+    logger: Logger,
+    socket: uni TcpServer,
+  ) -> Listener {
+    Listener(config: recover config.clone, logger: logger, socket: socket)
+  }
+
+  fn async mut start {
+    loop {
+      let sock = match @socket.accept {
+        case Ok(v) -> v
+        case Error(e) -> {
+          @logger.warn('failed to accept a new client: ${e}')
+          next
+        }
+      }
+
+      # TODO: handle the rest
+    }
+  }
+}
+
+type Server {
+  let @config: Config
+  let @logger: Logger
+
+  fn static new(config: Config, logger: Logger) -> Self {
+    Server(config: config, logger: logger)
+  }
+
+  fn move start -> Result[Nil, String] {
+    let port = @config.port.to_int
+    let listeners = @config.listeners.to_int
+
+    try @config.ips.iter.try_each(fn (ip) {
+      let sock = recover {
+        match TcpServer.new(ip, port) {
+          case Ok(v) -> v
+          case Error(e) -> throw 'failed to bind to ${ip}:${port}: ${e}'
+        }
+      }
+
+      let mut i = 1
+
+      while i < listeners {
+        let sock = recover {
+          match sock.try_clone {
+            case Ok(v) -> v
+            case Error(e) -> throw 'failed to clone a listener socket: ${e}'
+          }
+        }
+
+        # TODO: retain process?
+        let proc = Listener.new(@config, @logger, sock)
+
+        proc.start
+        i += 1
+      }
+
+      # TODO: retain process?
+      let proc = Listener.new(@config.clone, @logger, sock)
+
+      proc.start
+      Result.Ok(nil)
+    })
+
+    # TODO: what should the main process do at this point?
+
+    Result.Ok(nil)
+  }
+}
