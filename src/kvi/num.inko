@@ -1,4 +1,6 @@
-import std.int (Format, ToInt)
+import std.cmp (Equal)
+import std.fmt (Format, Formatter)
+import std.int (self, ToInt)
 
 fn zero_error(value: Int) -> Never {
   panic('expected ${value} to be greater than zero')
@@ -24,7 +26,7 @@ type copy NonZeroInt {
   # If the input is valid, the parsed value is wrapped in an `Option.Some`. If
   # the value is invalid, an `Option.None` is returned instead.
   fn static from_decimal_string(string: String) -> Option[NonZeroInt] {
-    match Int.parse(string, Format.Decimal) {
+    match Int.parse(string, int.Format.Decimal) {
       case Some(v) if v > 0 -> Option.Some(NonZeroInt(v))
       case _ -> Option.None
     }
@@ -34,5 +36,17 @@ type copy NonZeroInt {
 impl ToInt for NonZeroInt {
   fn pub inline to_int -> Int {
     @inner
+  }
+}
+
+impl Equal for NonZeroInt {
+  fn pub inline ==(other: NonZeroInt) -> Bool {
+    @inner == other.inner
+  }
+}
+
+impl Format for NonZeroInt {
+  fn pub fmt(formatter: mut Formatter) {
+    @inner.fmt(formatter)
   }
 }

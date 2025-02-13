@@ -48,7 +48,7 @@ type Config {
   fn mut parse_ips(values: Array[String]) -> Result[Nil, String] {
     @ips = try Result.collect(
       values.into_iter.map(fn (v) {
-        IpAddress.parse(v).ok_or_else(fn { "the IP '${v}' is invalid" })
+        IpAddress.parse(v).ok_or_else(fn { "'${v}' is an invalid IP" })
       }),
     )
     Result.Ok(nil)
@@ -57,7 +57,7 @@ type Config {
   fn mut parse_port(value: String) -> Result[Nil, String] {
     match NonZeroInt.from_decimal_string(value) {
       case Some(p) -> @port = p
-      case _ -> throw "the port number '${value}' is invalid"
+      case _ -> throw "'${value}' is an invalid port"
     }
 
     Result.Ok(nil)

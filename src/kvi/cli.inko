@@ -28,7 +28,7 @@ fn pub run[W: mut + Write](
   opts.flag('h', 'help', 'Show this help message')
   opts.flag('v', 'version', 'Show the version')
   opts.multiple('i', 'ip', 'IP', 'The IP addresses to bind to')
-  opts.single('p', 'port', 'INT', 'The port number to bind to')
+  opts.single('p', 'port', 'INT', 'The port to bind to')
   opts.single('s', 'shards', 'INT', 'The number of shards to use')
   opts.single('l', 'listeners', 'INT', 'The number of parallel listeners')
   opts.single(

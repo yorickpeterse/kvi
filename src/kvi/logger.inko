@@ -2,22 +2,23 @@ import std.cmp (Compare, Ordering)
 import std.int (ToInt)
 import std.stdio (Stderr)
 import std.string (ToString)
+import std.sync (Promise)
 
 # The minimum level/type of message to log.
 type copy enum Level {
-  case None
   case Info
   case Warning
   case Error
+  case None
 }
 
 impl ToInt for Level {
   fn pub inline to_int -> Int {
     match self {
-      case None -> 0
-      case Info -> 1
-      case Warning -> 2
-      case Error -> 3
+      case Info -> 0
+      case Warning -> 1
+      case Error -> 2
+      case None -> 3
     }
   }
 }
@@ -25,10 +26,10 @@ impl ToInt for Level {
 impl ToString for Level {
   fn pub inline to_string -> String {
     match self {
-      case None -> ''
       case Info -> 'INFO'
       case Warning -> 'WARN'
       case Error -> 'ERROR'
+      case None -> ''
     }
   }
 }
@@ -59,15 +60,21 @@ type async Logger {
   }
 
   fn async mut warn(message: String) {
-    write(Level.Info, message)
+    write(Level.Warning, message)
   }
 
   fn async mut error(message: String) {
     write(Level.Error, message)
   }
 
+  fn async mut flush(promise: uni Promise[Nil]) {
+    let _ = @output.flush
+
+    promise.set(nil)
+  }
+
   fn mut write(level: Level, message: String) {
-    if @level < level { return }
+    if level < @level { return }
 
     # Logging failures aren't a big deal and probably won't happen anyway, so we
     # ignore them.

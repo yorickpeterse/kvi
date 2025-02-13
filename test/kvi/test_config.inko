@@ -1,0 +1,70 @@
+import kvi.config (Config)
+import std.net.ip (IpAddress)
+import std.test (Tests)
+
+fn pub tests(t: mut Tests) {
+  t.test('Config.parse_ips', fn (t) {
+    let conf = Config.new
+
+    t.equal(conf.parse_ips(['1.2.3.4']), Result.Ok(nil))
+    t.equal(conf.ips, [IpAddress.v4(1, 2, 3, 4)])
+
+    t.equal(conf.parse_ips(['abc']), Result.Error("'abc' is an invalid IP"))
+    t.equal(conf.ips, [IpAddress.v4(1, 2, 3, 4)])
+  })
+
+  t.test('Config.parse_port', fn (t) {
+    let conf = Config.new
+
+    t.equal(conf.parse_port('1234'), Result.Ok(nil))
+    t.equal(conf.port.to_int, 1234)
+
+    t.equal(conf.parse_port('abc'), Result.Error("'abc' is an invalid port"))
+    t.equal(conf.port.to_int, 1234)
+  })
+
+  t.test('Config.parse_shards', fn (t) {
+    let conf = Config.new
+
+    t.equal(conf.parse_shards('123'), Result.Ok(nil))
+    t.equal(conf.shards.to_int, 123)
+
+    t.equal(
+      conf.parse_shards('abc'),
+      Result.Error("'abc' is an invalid number of shards"),
+    )
+    t.equal(conf.shards.to_int, 123)
+  })
+
+  t.test('Config.parse_listeners', fn (t) {
+    let conf = Config.new
+
+    t.equal(conf.parse_listeners('123'), Result.Ok(nil))
+    t.equal(conf.listeners.to_int, 123)
+
+    t.equal(
+      conf.parse_listeners('abc'),
+      Result.Error("'abc' is an invalid number of listeners"),
+    )
+    t.equal(conf.listeners.to_int, 123)
+  })
+
+  t.test('Config.parse_fragmentation', fn (t) {
+    let conf = Config.new
+
+    t.equal(conf.parse_fragmentation('90'), Result.Ok(nil))
+    t.equal(conf.fragmentation.to_int, 90)
+
+    t.equal(
+      conf.parse_fragmentation('abc'),
+      Result.Error("'abc' is an invalid fragmentation threshold"),
+    )
+    t.equal(conf.fragmentation.to_int, 90)
+
+    t.equal(
+      conf.parse_fragmentation('125'),
+      Result.Error("'125' is an invalid fragmentation threshold"),
+    )
+    t.equal(conf.fragmentation.to_int, 90)
+  })
+}

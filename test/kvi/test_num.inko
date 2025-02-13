@@ -1,0 +1,32 @@
+import kvi.num (NonZeroInt)
+import std.fmt (fmt)
+import std.test (Tests)
+
+fn pub tests(t: mut Tests) {
+  t.panic('NonZeroInt.new with zero', fn { NonZeroInt.new(0) })
+
+  t.panic('NonZeroInt.new with a negative Int', fn { NonZeroInt.new(-4) })
+
+  t.no_panic('NonZeroInt with a positive value', fn { NonZeroInt.new(4) })
+
+  t.test('NonZeroInt.from_decimal_string', fn (t) {
+    t.equal(
+      NonZeroInt.from_decimal_string('123'),
+      Option.Some(NonZeroInt.new(123)),
+    )
+    t.equal(NonZeroInt.from_decimal_string('0'), Option.None)
+    t.equal(NonZeroInt.from_decimal_string('-1'), Option.None)
+    t.equal(NonZeroInt.from_decimal_string('abc'), Option.None)
+  })
+
+  t.test('NonZeroInt.to_int', fn (t) {
+    t.equal(NonZeroInt.new(123).to_int, 123)
+  })
+
+  t.test('NonZeroInt.==', fn (t) {
+    t.equal(NonZeroInt.new(1), NonZeroInt.new(1))
+    t.not_equal(NonZeroInt.new(1), NonZeroInt.new(2))
+  })
+
+  t.test('NonZeroInt.fmt', fn (t) { t.equal(fmt(NonZeroInt.new(12)), '12') })
+}

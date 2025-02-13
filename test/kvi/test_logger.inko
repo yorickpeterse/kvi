@@ -1,0 +1,80 @@
+import kvi.logger (Logger)
+import std.sync (Future)
+import std.test (Tests)
+
+fn flush(logger: Logger) {
+  match Future.new {
+    case (fut, prom) -> {
+      logger.flush(prom)
+      fut.get
+    }
+  }
+}
+
+fn pub tests(t: mut Tests) {
+  t.fork(
+    'Logger.info',
+    child: fn {
+      let log = Logger.new
+
+      log.info('foo')
+      flush(log)
+    },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'INFO: foo\n') },
+  )
+
+  t.fork(
+    'Logger.info when logging is disabled',
+    child: fn {
+      let log = Logger.disabled
+
+      log.info('foo')
+      flush(log)
+    },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, '') },
+  )
+
+  t.fork(
+    'Logger.warn',
+    child: fn {
+      let log = Logger.new
+
+      log.warn('foo')
+      flush(log)
+    },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'WARN: foo\n') },
+  )
+
+  t.fork(
+    'Logger.warn when logging is disabled',
+    child: fn {
+      let log = Logger.disabled
+
+      log.warn('foo')
+      flush(log)
+    },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, '') },
+  )
+
+  t.fork(
+    'Logger.error',
+    child: fn {
+      let log = Logger.new
+
+      log.error('foo')
+      flush(log)
+    },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'ERROR: foo\n') },
+  )
+
+  t.fork(
+    'Logger.error when logging is disabled',
+    child: fn {
+      let log = Logger.disabled
+
+      log.error('foo')
+      flush(log)
+    },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, '') },
+  )
+}

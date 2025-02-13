@@ -1,6 +1,7 @@
 import kvi.config (Config)
 import kvi.logger (Logger)
 import std.net.socket (TcpServer)
+import std.sync (Future)
 
 type async Listener {
   let @config: Config
@@ -25,7 +26,8 @@ type async Listener {
         }
       }
 
-      # TODO: handle the rest
+      # TODO: parse the message
+      # TODO: dispatch to the appropriate shard
     }
   }
 }
@@ -74,7 +76,14 @@ type Server {
       Result.Ok(nil)
     })
 
-    # TODO: what should the main process do at this point?
+    # Wait for any pending log data to be written, otherwise we might stop
+    # before doing so.
+    match Future.new {
+      case (fut, prom) -> {
+        @logger.flush(prom)
+        fut.get
+      }
+    }
 
     Result.Ok(nil)
   }
