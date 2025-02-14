@@ -21,13 +21,12 @@ type Config {
   # This defaults to the number of CPU cores.
   let mut @shards: NonZeroInt
 
-  # The number of processes to use for listening for and handling incoming
-  # connections.
+  # The number of processes to use for accepting new connections.
   #
   # This defaults to the number of CPU cores. When binding to multiple IP
   # addresses, the total number of processes is the number of IPs times the
   # value of this setting.
-  let mut @listeners: NonZeroInt
+  let mut @accepters: NonZeroInt
 
   # The fragmentation percentage (1-100) to allow before defragmentation is
   # necessary.
@@ -40,7 +39,7 @@ type Config {
       ips: [IpAddress.v4(0, 0, 0, 0)],
       port: NonZeroInt.new(2025_2),
       shards: NonZeroInt.new(cpu_cores),
-      listeners: NonZeroInt.new(cpu_cores),
+      accepters: NonZeroInt.new(cpu_cores),
       fragmentation: NonZeroInt.new(10),
     )
   }
@@ -72,10 +71,10 @@ type Config {
     Result.Ok(nil)
   }
 
-  fn mut parse_listeners(value: String) -> Result[Nil, String] {
+  fn mut parse_accepters(value: String) -> Result[Nil, String] {
     match NonZeroInt.from_decimal_string(value) {
-      case Some(p) -> @listeners = p
-      case _ -> throw "'${value}' is an invalid number of listeners"
+      case Some(p) -> @accepters = p
+      case _ -> throw "'${value}' is an invalid number of accepters"
     }
 
     Result.Ok(nil)
@@ -97,7 +96,7 @@ impl Clone for Config {
       ips: @ips.clone,
       port: @port,
       shards: @shards,
-      listeners: @listeners,
+      accepters: @accepters,
       fragmentation: @fragmentation,
     )
   }

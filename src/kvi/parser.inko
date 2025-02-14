@@ -1,0 +1,191 @@
+import std.cmp (Equal)
+import std.fmt (Format, Formatter)
+import std.io (Error as IoError, Read)
+import std.string (ToString)
+
+let AST = 42
+let DLR = 36
+let ZERO = 48
+let NINE = 57
+let CR = 13
+let LF = 10
+
+fn inline parse_digit(current: Int, byte: Int) -> Int {
+  current.wrapping_mul(10).wrapping_add(byte - ZERO)
+}
+
+fn inline digit?(byte: Int) -> Bool {
+  byte >= ZERO and byte <= NINE
+}
+
+type copy enum Error {
+  # The given byte is invalid/unexpected.
+  case InvalidByte(Int)
+
+  # A generic IO error occurred when reading from the input stream.
+  case Read(IoError)
+}
+
+impl ToString for Error {
+  fn pub to_string -> String {
+    match self {
+      case InvalidByte(v) -> 'the byte ${v} is invalid/unexpected'
+      case Read(e) -> e.to_string
+    }
+  }
+}
+
+impl Equal for Error {
+  fn pub ==(other: Error) -> Bool {
+    match (self, other) {
+      case (InvalidByte(a), InvalidByte(b)) -> a == b
+      case (Read(a), Read(b)) -> a == b
+      case _ -> false
+    }
+  }
+}
+
+impl Format for Error {
+  fn pub fmt(formatter: mut Formatter) {
+    match self {
+      case InvalidByte(v) -> formatter.tuple('InvalidByte').field(v).finish
+      case Read(v) -> formatter.tuple('read').field(v).finish
+    }
+  }
+}
+
+type copy enum Event {
+  case Array(Int)
+  case BulkString(Int)
+}
+
+impl Equal for Event {
+  fn pub ==(other: Event) -> Bool {
+    match (self, other) {
+      case (Array(a), Array(b)) -> a == b
+      case (BulkString(a), BulkString(b)) -> a == b
+      case _ -> false
+    }
+  }
+}
+
+impl Format for Event {
+  fn pub fmt(formatter: mut Formatter) {
+    match self {
+      case Array(v) -> formatter.tuple('Array').field(v).finish
+      case BulkString(v) -> formatter.tuple('BulkString').field(v).finish
+    }
+  }
+}
+
+type inline Parser[T: mut + Read] {
+  let @reader: T
+  let @buffer: ByteArray
+
+  fn static new(reader: T) -> Parser[T] {
+    Parser(reader: reader, buffer: ByteArray.new)
+  }
+
+  fn mut parse -> Result[Event, Error] {
+    match try read_byte {
+      case AST -> Result.Ok(Event.Array(try read_size))
+      case DLR -> Result.Ok(Event.BulkString(try read_size))
+      case v -> throw Error.InvalidByte(v)
+    }
+  }
+
+  fn mut read_size -> Result[Int, Error] {
+    let mut size = 0
+
+    # The minimum number of bytes is three: one for a single digit, and two for
+    # \r\n. This means we can read the initial/minimum amount of necessary data
+    # in a single call.
+    try read_exact(3)
+
+    match (@buffer.get(0), @buffer.get(1), @buffer.get(2)) {
+      case (a, CR, LF) if digit?(a) -> {
+        @buffer.clear
+        size = parse_digit(size, a)
+        return Result.Ok(size)
+      }
+      case (a, b, CR) if digit?(a) and digit?(b) -> {
+        @buffer.clear
+        size = parse_digit(size, a)
+        size = parse_digit(size, b)
+        try read_lf
+        return Result.Ok(size)
+      }
+      case (a, b, c) if digit?(a) and digit?(b) and digit?(c) -> {
+        @buffer.clear
+        size = parse_digit(size, a)
+        size = parse_digit(size, b)
+        size = parse_digit(size, c)
+      }
+      case (a, _, _) -> throw Error.InvalidByte(a)
+    }
+
+    # For the remaining input we can only read at most two bytes per time,
+    # otherwise we might read too much. For example, for the input `123\r\n` the
+    # above code reads `123`, leaving us with the remaining `\r\n`.
+    loop {
+      try read_exact(2)
+
+      match (@buffer.get(0), @buffer.get(1)) {
+        case (CR, LF) -> {
+          @buffer.clear
+          break
+        }
+        case (a, CR) if digit?(a) -> {
+          @buffer.clear
+          size = parse_digit(size, a)
+          try read_lf
+          break
+        }
+        case (a, b) if digit?(a) and digit?(b) -> {
+          @buffer.clear
+          size = parse_digit(size, a)
+          size = parse_digit(size, b)
+        }
+        case (a, _) -> throw Error.InvalidByte(a)
+      }
+    }
+
+    Result.Ok(size)
+  }
+
+  fn mut read_byte -> Result[Int, Error] {
+    match read(1) {
+      case Error(e) -> Result.Error(e)
+      case Ok(0) -> Result.Error(Error.Read(IoError.EndOfInput))
+      case Ok(_) -> Result.Ok(@buffer.pop.get)
+    }
+  }
+
+  fn mut read_exact(size: Int) -> Result[Nil, Error] {
+    match read(size) {
+      case Ok(n) if n == size -> Result.Ok(nil)
+      case Ok(_) -> Result.Error(Error.Read(IoError.EndOfInput))
+      case Error(e) -> Result.Error(e)
+    }
+  }
+
+  fn mut read_lf -> Result[Nil, Error] {
+    match try read_byte {
+      case LF -> Result.Ok(nil)
+      case v -> Result.Error(Error.InvalidByte(v))
+    }
+  }
+
+  fn mut skip_byte -> Result[Nil, Error] {
+    try read_byte
+    @buffer.clear
+    Result.Ok(nil)
+  }
+
+  fn mut read(size: Int) -> Result[Int, Error] {
+    match @reader.read(into: @buffer, size: size) {
+      case Ok(n) -> Result.Ok(n)
+      case Error(e) -> Result.Error(Error.Read(e))
+    }
+  }
+}

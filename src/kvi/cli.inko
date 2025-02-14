@@ -30,7 +30,12 @@ fn pub run[W: mut + Write](
   opts.multiple('i', 'ip', 'IP', 'The IP addresses to bind to')
   opts.single('p', 'port', 'INT', 'The port to bind to')
   opts.single('s', 'shards', 'INT', 'The number of shards to use')
-  opts.single('l', 'listeners', 'INT', 'The number of parallel listeners')
+  opts.single(
+    'a',
+    'accepters',
+    'INT',
+    'The number of processes to use for accepting new connections',
+  )
   opts.single(
     'f',
     'fragmentation',
@@ -67,8 +72,8 @@ fn pub run[W: mut + Write](
     case _ -> {}
   }
 
-  match matches.value('listeners') {
-    case Some(v) -> try conf.parse_listeners(v)
+  match matches.value('accepters') {
+    case Some(v) -> try conf.parse_accepters(v)
     case _ -> {}
   }
 

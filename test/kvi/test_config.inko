@@ -36,17 +36,17 @@ fn pub tests(t: mut Tests) {
     t.equal(conf.shards.to_int, 123)
   })
 
-  t.test('Config.parse_listeners', fn (t) {
+  t.test('Config.parse_accepters', fn (t) {
     let conf = Config.new
 
-    t.equal(conf.parse_listeners('123'), Result.Ok(nil))
-    t.equal(conf.listeners.to_int, 123)
+    t.equal(conf.parse_accepters('123'), Result.Ok(nil))
+    t.equal(conf.accepters.to_int, 123)
 
     t.equal(
-      conf.parse_listeners('abc'),
-      Result.Error("'abc' is an invalid number of listeners"),
+      conf.parse_accepters('abc'),
+      Result.Error("'abc' is an invalid number of accepters"),
     )
-    t.equal(conf.listeners.to_int, 123)
+    t.equal(conf.accepters.to_int, 123)
   })
 
   t.test('Config.parse_fragmentation', fn (t) {

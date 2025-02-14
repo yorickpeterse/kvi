@@ -1,36 +1,11 @@
 import kvi.config (Config)
 import kvi.logger (Logger)
-import std.net.socket (TcpServer)
+import kvi.parser (Parser)
+import kvi.signal (Signals)
+import std.net.socket (TcpClient, TcpServer)
+import std.signal (Signal)
 import std.sync (Future)
-
-type async Listener {
-  let @config: Config
-  let @logger: Logger
-  let @socket: TcpServer
-
-  fn static new(
-    config: ref Config,
-    logger: Logger,
-    socket: uni TcpServer,
-  ) -> Listener {
-    Listener(config: recover config.clone, logger: logger, socket: socket)
-  }
-
-  fn async mut start {
-    loop {
-      let sock = match @socket.accept {
-        case Ok(v) -> v
-        case Error(e) -> {
-          @logger.warn('failed to accept a new client: ${e}')
-          next
-        }
-      }
-
-      # TODO: parse the message
-      # TODO: dispatch to the appropriate shard
-    }
-  }
-}
+import std.time (Duration)
 
 type Server {
   let @config: Config
@@ -41,10 +16,8 @@ type Server {
   }
 
   fn move start -> Result[Nil, String] {
-    let port = @config.port.to_int
-    let listeners = @config.listeners.to_int
-
-    try @config.ips.iter.try_each(fn (ip) {
+    let sockets = try @config.ips.iter.try_reduce([], fn (socks, ip) {
+      let port = @config.port.to_int
       let sock = recover {
         match TcpServer.new(ip, port) {
           case Ok(v) -> v
@@ -52,9 +25,10 @@ type Server {
         }
       }
 
-      let mut i = 1
+      let mut i = 0
+      let max = @config.accepters.to_int
 
-      while i < listeners {
+      while i < max {
         let sock = recover {
           match sock.try_clone {
             case Ok(v) -> v
@@ -62,29 +36,99 @@ type Server {
           }
         }
 
-        # TODO: retain process?
-        let proc = Listener.new(@config, @logger, sock)
-
-        proc.start
+        Accepter.new(@config, @logger, sock).run
         i += 1
       }
 
-      # TODO: retain process?
-      let proc = Listener.new(@config.clone, @logger, sock)
-
-      proc.start
-      Result.Ok(nil)
+      socks.push(recover sock)
+      Result.Ok(socks)
     })
 
-    # Wait for any pending log data to be written, otherwise we might stop
-    # before doing so.
+    let signals = Signals.new
+
+    signals.add(Signal.Interrupt)
+    signals.add(Signal.Terminate)
+    signals.add(Signal.Quit)
+
+    loop {
+      match signals.wait {
+        case Interrupt or Terminate -> {
+          @logger.info('shutting down gracefully')
+          break
+        }
+        case _ -> return Result.Ok(nil)
+      }
+    }
+
+    # Shutting down the sockets wakes up any sleeping accepter processes,
+    # allowing them to shut down cleanly without accepting new connections.
+    sockets.into_iter.each(fn (s) { let _ = s.socket.shutdown })
+
+    # Wait for any pending log data to be written, unless this takes too long.
     match Future.new {
       case (fut, prom) -> {
         @logger.flush(prom)
-        fut.get
+
+        let _ = fut.get_until(Duration.from_secs(2))
       }
     }
 
     Result.Ok(nil)
+  }
+}
+
+type async Accepter {
+  let @config: Config
+  let @logger: Logger
+  let @socket: TcpServer
+
+  fn static new(
+    config: ref Config,
+    logger: Logger,
+    socket: uni TcpServer,
+  ) -> Accepter {
+    Accepter(config: recover config.clone, logger: logger, socket: socket)
+  }
+
+  fn async mut run {
+    loop {
+      let sock = recover {
+        match @socket.accept {
+          case Ok(v) -> v
+          # We may encounter this error if the server is being shut down in
+          # response to e.g. a SIGINT signal.
+          case Error(InvalidArgument) -> break
+          case Error(e) -> {
+            @logger.warn('failed to accept a new connection: ${e}')
+            next
+          }
+        }
+      }
+
+      Connection.new(sock, @logger).start
+    }
+  }
+}
+
+type async Connection {
+  let @socket: TcpClient
+  let @logger: Logger
+  let @buffer: ByteArray
+
+  fn static new(socket: uni TcpClient, logger: Logger) -> Connection {
+    Connection(socket: socket, logger: logger, buffer: recover ByteArray.new)
+  }
+
+  fn async mut start {
+    # @socket.read(into: @buffer, size: 32).or_panic('write better code dummy')
+    # @logger.info(@buffer.drain_to_string.escaped)
+
+    # parse message type
+    let parser = Parser.new(@socket)
+
+    match parser.parse {
+      case Ok(v) -> {}
+      case Error(e) -> @logger.error('failed to parse a command: ${e}')
+    }
   }
 }
