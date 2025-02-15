@@ -1,10 +1,14 @@
-import kvi.parser (Error, Event, Parser)
+import kvi.parser (Command, Error, Event, Parser)
 import std.io (Buffer)
 import std.test (Tests)
 
 fn parser(input: String, buffer: mut ByteArray) -> Parser[Buffer[String]] {
   buffer.clear
   Parser.new(Buffer.new(input), buffer)
+}
+
+fn cmd(input: String) -> Result[Command, Error] {
+  parser(input, ByteArray.new).command
 }
 
 fn parse(input: String) -> Result[Event, Error] {
@@ -17,6 +21,10 @@ fn end_of_input[T] -> Result[T, Error] {
 
 fn invalid_syntax[T] -> Result[T, Error] {
   Result.Error(Error.InvalidSyntax)
+}
+
+fn invalid_command[T] -> Result[T, Error] {
+  Result.Error(Error.InvalidCommand)
 }
 
 fn pub tests(t: mut Tests) {
@@ -87,5 +95,26 @@ fn pub tests(t: mut Tests) {
     t.equal(parser('*1\r\n', buf).array, Result.Ok(1))
     t.equal(parser(':0\r\n', buf).array, invalid_syntax)
     t.equal(parser('', buf).array, end_of_input)
+  })
+
+  t.test('Parser.command', fn (t) {
+    t.equal(cmd('$3\r\nDEL\r\n'), Result.Ok(Command.Delete))
+    t.equal(cmd('$3\r\nGET\r\n'), Result.Ok(Command.Get))
+    t.equal(cmd('$3\r\nSET\r\n'), Result.Ok(Command.Set))
+    t.equal(cmd('$4\r\nKEYS\r\n'), Result.Ok(Command.Keys))
+    t.equal(cmd('$5\r\nHELLO\r\n'), Result.Ok(Command.Hello))
+
+    t.equal(cmd('$0\r\n'), invalid_syntax)
+    t.equal(cmd('$1\r\n'), invalid_syntax)
+    t.equal(cmd('$2\r\n'), invalid_syntax)
+    t.equal(cmd('$3\r\n'), end_of_input)
+    t.equal(cmd('$3\r\nFOO\r\n'), invalid_command)
+    t.equal(cmd('$4\r\nDELZ\r\n'), invalid_command)
+    t.equal(cmd('$4\r\nGETZ\r\n'), invalid_command)
+    t.equal(cmd('$4\r\nSETZ\r\n'), invalid_command)
+    t.equal(cmd('$4\r\nHELZ\r\n'), invalid_command)
+    t.equal(cmd('$4\r\nKEYZ\r\n'), invalid_command)
+    t.equal(cmd('$5\r\nKEYSS\r\n'), invalid_command)
+    t.equal(cmd('$5\r\nHELLX\r\n'), invalid_command)
   })
 }

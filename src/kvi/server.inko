@@ -5,6 +5,10 @@ import kvi.signal (Signals)
 import std.net.socket (TcpClient, TcpServer)
 import std.signal (Signal)
 
+# TODO: remove
+import std.fmt (fmt)
+import std.stdio (Stdout)
+
 type Server {
   let @config: Config
   let @logger: Logger
@@ -15,9 +19,18 @@ type Server {
     Server(config: config, logger: logger)
   }
 
+  # TODO: use logging for errors
   fn move start -> Result[Nil, String] {
+    let accepters = @config.accepters.to_int
+    let shards = @config.shards.to_int
+
+    @logger.info('starting with ${accepters} accepters and ${shards} shards')
+
     let sockets = try @config.ips.iter.try_reduce([], fn (socks, ip) {
       let port = @config.port.to_int
+
+      @logger.info('listening on ${ip}:${port}')
+
       let sock = recover {
         match TcpServer.new(ip, port) {
           case Ok(v) -> v
@@ -26,9 +39,8 @@ type Server {
       }
 
       let mut i = 0
-      let max = @config.accepters.to_int
 
-      while i < max {
+      while i < accepters {
         let sock = recover {
           match sock.try_clone {
             case Ok(v) -> v
@@ -144,9 +156,45 @@ type async Connection {
     run(socket)
   }
 
+  # TODO: separate syntax errors (e.g. incorrect sizes) and logical errors (e.g.
+  # an invalid protocol version).
   fn mut parse_request(socket: mut TcpClient) -> Result[Nil, Error] {
     let parser = Parser.new(socket, @buffer)
-    let size = try parser.array
+    let mut ary_len = try parser.array
+
+    match try parser.command {
+      case Hello -> {
+        match try parser.string_literal(size: 1) {
+          case '3' -> {
+            # TODO: write the actual details
+            # TODO: use generator type instead of writing this by hand
+            let _ = socket.write_string(
+              '%3\r
+$6\r
+server\r
+$3\r
+kvi\r
+$7\r
+version\r
+$5\r
+0.1.0\r
+$5\r
+proto\r
+:3\r\n',
+            )
+
+            @logger.debug('finished handshake')
+          }
+          case n -> {
+            @logger.debug('rejected unsupported protocol version ${n}')
+            throw Error.InvalidCommand
+          }
+        }
+      }
+      case _ -> throw Error.InvalidCommand
+    }
+
+    # TODO: *2\r\n$7\r\nCOMMAND\r\n$4\r\nDOCS\r\n
 
     # TODO: handling of commands is contextual. For example, `COMMAND
     # DOCS` is just two separate strings. This means that when we parse
