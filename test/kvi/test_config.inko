@@ -1,4 +1,5 @@
 import kvi.config (Config)
+import kvi.logger (Level)
 import std.net.ip (IpAddress)
 import std.test (Tests)
 
@@ -66,5 +67,18 @@ fn pub tests(t: mut Tests) {
       Result.Error("'125' is an invalid fragmentation threshold"),
     )
     t.equal(conf.fragmentation.to_int, 90)
+  })
+
+  t.test('Config.parse_log_level', fn (t) {
+    let conf = Config.new
+
+    t.equal(conf.parse_log_level('warn'), Result.Ok(nil))
+    t.equal(conf.log_level, Level.Warn)
+
+    t.equal(
+      conf.parse_log_level('foo'),
+      Result.Error("'foo' is an invalid log level"),
+    )
+    t.equal(conf.log_level, Level.Warn)
   })
 }

@@ -1,24 +1,40 @@
-import std.cmp (Compare, Ordering)
+# Logging of messages.
+import std.clone (Clone)
+import std.cmp (Compare, Equal, Ordering)
+import std.fmt (Format, Formatter)
 import std.int (ToInt)
 import std.stdio (Stderr)
 import std.string (ToString)
-import std.sync (Promise)
+import std.sync (Future, Promise)
 
 # The minimum level/type of message to log.
 type copy enum Level {
+  case Debug
   case Info
-  case Warning
+  case Warn
   case Error
   case None
+
+  fn static parse(value: String) -> Option[Level] {
+    match value {
+      case 'debug' -> Option.Some(Level.Debug)
+      case 'info' -> Option.Some(Level.Info)
+      case 'warn' -> Option.Some(Level.Warn)
+      case 'error' -> Option.Some(Level.Error)
+      case 'none' -> Option.Some(Level.None)
+      case _ -> Option.None
+    }
+  }
 }
 
 impl ToInt for Level {
   fn pub inline to_int -> Int {
     match self {
-      case Info -> 0
-      case Warning -> 1
-      case Error -> 2
-      case None -> 3
+      case Debug -> 0
+      case Info -> 1
+      case Warn -> 2
+      case Error -> 3
+      case None -> 4
     }
   }
 }
@@ -26,10 +42,24 @@ impl ToInt for Level {
 impl ToString for Level {
   fn pub inline to_string -> String {
     match self {
+      case Debug -> 'DEBUG'
       case Info -> 'INFO'
-      case Warning -> 'WARN'
+      case Warn -> 'WARN'
       case Error -> 'ERROR'
       case None -> ''
+    }
+  }
+}
+
+impl Equal for Level {
+  fn pub ==(other: Level) -> Bool {
+    match (self, other) {
+      case (Debug, Debug) -> true
+      case (Info, Info) -> true
+      case (Warn, Warn) -> true
+      case (Error, Error) -> true
+      case (None, None) -> true
+      case _ -> false
     }
   }
 }
@@ -40,31 +70,24 @@ impl Compare for Level {
   }
 }
 
-# A process for logging output to STDERR.
-type async Logger {
+impl Format for Level {
+  fn pub fmt(formatter: mut Formatter) {
+    match self {
+      case Debug -> formatter.tuple('Debug').finish
+      case Info -> formatter.tuple('Info').finish
+      case Warn -> formatter.tuple('Warn').finish
+      case Error -> formatter.tuple('Error').finish
+      case None -> formatter.tuple('None').finish
+    }
+  }
+}
+
+# A process that writes logging data to STDERR.
+type async LogWriter {
   let @output: Stderr
-  let @level: Level
 
-  # Returns a `Logger` that logs any kind of message.
-  fn static new -> Logger {
-    Logger(output: recover Stderr.new, level: Level.Info)
-  }
-
-  # Returns a `Logger` that doesn't log any messages.
-  fn static disabled -> Logger {
-    Logger(output: recover Stderr.new, level: Level.None)
-  }
-
-  fn async mut info(message: String) {
-    write(Level.Info, message)
-  }
-
-  fn async mut warn(message: String) {
-    write(Level.Warning, message)
-  }
-
-  fn async mut error(message: String) {
-    write(Level.Error, message)
+  fn static new -> Self {
+    LogWriter(recover Stderr.new)
   }
 
   fn async mut flush(promise: uni Promise[Nil]) {
@@ -73,11 +96,65 @@ type async Logger {
     promise.set(nil)
   }
 
-  fn mut write(level: Level, message: String) {
-    if level < @level { return }
-
+  fn async mut write(level: Level, message: String) {
     # Logging failures aren't a big deal and probably won't happen anyway, so we
     # ignore them.
     let _ = @output.write_string('${level}: ${message}\n')
+  }
+}
+
+# A type for logging messages to STDERR.
+#
+# A logger consists of two parts:
+#
+# - A `LogWriter` process tasked with performing the actual writing
+# - A `Logger` wrapper type that determines if logging is necessary and if so,
+#   forwards the request to the `LogWriter`
+#
+# This setup allows multiple processes to use the same logger without the output
+# getting messed up, and prevents us from sending redundant logging messages to
+# the `LogWriter`.
+type inline Logger {
+  let @writer: LogWriter
+  let @level: Level
+
+  # Returns a `Logger` that logs any kind of message.
+  fn static new(level: Level) -> Logger {
+    Logger(writer: LogWriter.new, level: level)
+  }
+
+  fn mut debug(message: String) {
+    write(Level.Debug, message)
+  }
+
+  fn mut info(message: String) {
+    write(Level.Info, message)
+  }
+
+  fn mut warn(message: String) {
+    write(Level.Warn, message)
+  }
+
+  fn mut error(message: String) {
+    write(Level.Error, message)
+  }
+
+  fn mut flush {
+    match Future.new {
+      case (fut, prom) -> {
+        @writer.flush(prom)
+        fut.get
+      }
+    }
+  }
+
+  fn mut write(level: Level, message: String) {
+    if level >= @level { @writer.write(level, message) }
+  }
+}
+
+impl Clone for Logger {
+  fn pub clone -> Logger {
+    Logger(writer: @writer, level: @level)
   }
 }

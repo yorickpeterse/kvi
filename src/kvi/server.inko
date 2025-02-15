@@ -1,17 +1,17 @@
 import kvi.config (Config)
 import kvi.logger (Logger)
-import kvi.parser (Parser)
+import kvi.parser (Error, Parser)
 import kvi.signal (Signals)
 import std.net.socket (TcpClient, TcpServer)
 import std.signal (Signal)
-import std.sync (Future)
-import std.time (Duration)
 
 type Server {
   let @config: Config
   let @logger: Logger
 
-  fn static new(config: Config, logger: Logger) -> Self {
+  fn static new(config: Config) -> Self {
+    let logger = Logger.new(config.log_level)
+
     Server(config: config, logger: logger)
   }
 
@@ -36,7 +36,7 @@ type Server {
           }
         }
 
-        Accepter.new(@config, @logger, sock).run
+        Accepter.new(@config, recover @logger.clone, sock).run
         i += 1
       }
 
@@ -64,14 +64,9 @@ type Server {
     # allowing them to shut down cleanly without accepting new connections.
     sockets.into_iter.each(fn (s) { let _ = s.socket.shutdown })
 
-    # Wait for any pending log data to be written, unless this takes too long.
-    match Future.new {
-      case (fut, prom) -> {
-        @logger.flush(prom)
-
-        let _ = fut.get_until(Duration.from_secs(2))
-      }
-    }
+    # Wait for any pending log data to be written, otherwise we might lose that
+    # information.
+    @logger.flush
 
     Result.Ok(nil)
   }
@@ -84,7 +79,7 @@ type async Accepter {
 
   fn static new(
     config: ref Config,
-    logger: Logger,
+    logger: uni Logger,
     socket: uni TcpServer,
   ) -> Accepter {
     Accepter(config: recover config.clone, logger: logger, socket: socket)
@@ -99,36 +94,64 @@ type async Accepter {
           # response to e.g. a SIGINT signal.
           case Error(InvalidArgument) -> break
           case Error(e) -> {
-            @logger.warn('failed to accept a new connection: ${e}')
+            @logger.debug('failed to accept a new connection: ${e}')
             next
           }
         }
       }
 
-      Connection.new(sock, @logger).start
+      Connection.new(recover @logger.clone).run(sock)
     }
   }
 }
 
 type async Connection {
-  let @socket: TcpClient
   let @logger: Logger
   let @buffer: ByteArray
 
-  fn static new(socket: uni TcpClient, logger: Logger) -> Connection {
-    Connection(socket: socket, logger: logger, buffer: recover ByteArray.new)
+  fn static new(logger: uni Logger) -> Connection {
+    Connection(logger: logger, buffer: recover ByteArray.new)
   }
 
-  fn async mut start {
-    # @socket.read(into: @buffer, size: 32).or_panic('write better code dummy')
-    # @logger.info(@buffer.drain_to_string.escaped)
+  fn async mut run(socket: uni TcpClient) {
+    let socket = recover {
+      let socket = recover socket
 
-    # parse message type
-    let parser = Parser.new(@socket)
+      # TODO: how would we make this error handling logic reusable?
+      match parse_request(socket) {
+        case Ok(_) -> {
+          # TODO: act upon request
+          socket
+        }
+        # In the event of generic IO errors there's nothing we can do and
+        # logging isn't really useful, so we just shut down the connection.
+        case Error(Read(e)) -> {
+          let _ = socket.shutdown
 
-    match parser.parse {
-      case Ok(v) -> {}
-      case Error(e) -> @logger.error('failed to parse a command: ${e}')
+          @logger.debug('failed to parse client request: ${e}')
+          return
+        }
+        case Error(e) -> {
+          let _ = socket.write_string('-ERR ${e}\r\n')
+          let _ = socket.shutdown
+
+          @logger.debug('failed to parse client request: ${e}')
+          return
+        }
+      }
     }
+
+    run(socket)
+  }
+
+  fn mut parse_request(socket: mut TcpClient) -> Result[Nil, Error] {
+    let parser = Parser.new(socket, @buffer)
+    let size = try parser.array
+
+    # TODO: handling of commands is contextual. For example, `COMMAND
+    # DOCS` is just two separate strings. This means that when we parse
+    # `COMMAND` we have to check the array size to see if the command is
+    # given any arguments.
+    Result.Ok(nil)
   }
 }

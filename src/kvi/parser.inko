@@ -3,12 +3,15 @@ import std.fmt (Format, Formatter)
 import std.io (Error as IoError, Read)
 import std.string (ToString)
 
+let ADD = 43
 let AST = 42
-let DLR = 36
-let ZERO = 48
-let NINE = 57
+let CLN = 58
 let CR = 13
+let DLR = 36
 let LF = 10
+let NINE = 57
+let SUB = 45
+let ZERO = 48
 
 fn inline parse_digit(current: Int, byte: Int) -> Int {
   current.wrapping_mul(10).wrapping_add(byte - ZERO)
@@ -18,9 +21,18 @@ fn inline digit?(byte: Int) -> Bool {
   byte >= ZERO and byte <= NINE
 }
 
+# An error produced when parsing RESP3 messages.
+#
+# We deliberately don't track things like byte offsets/line numbers/whatever.
+# This information isn't reported back to clients and there's not really a point
+# in logging it either as a server can't do much about clients sending nonsense.
 type copy enum Error {
-  # The given byte is invalid/unexpected.
-  case InvalidByte(Int)
+  # The syntax is invalid (i.e. we ran into an unexpected byte).
+  case InvalidSyntax
+
+  # The data parsed thus far is valid, but we can out of input while expecting
+  # more.
+  case EndOfInput
 
   # A generic IO error occurred when reading from the input stream.
   case Read(IoError)
@@ -29,7 +41,8 @@ type copy enum Error {
 impl ToString for Error {
   fn pub to_string -> String {
     match self {
-      case InvalidByte(v) -> 'the byte ${v} is invalid/unexpected'
+      case InvalidSyntax -> 'the syntax is invalid'
+      case EndOfInput -> 'unexpected end of input'
       case Read(e) -> e.to_string
     }
   }
@@ -38,7 +51,8 @@ impl ToString for Error {
 impl Equal for Error {
   fn pub ==(other: Error) -> Bool {
     match (self, other) {
-      case (InvalidByte(a), InvalidByte(b)) -> a == b
+      case (InvalidSyntax, InvalidSyntax) -> true
+      case (EndOfInput, EndOfInput) -> true
       case (Read(a), Read(b)) -> a == b
       case _ -> false
     }
@@ -48,14 +62,16 @@ impl Equal for Error {
 impl Format for Error {
   fn pub fmt(formatter: mut Formatter) {
     match self {
-      case InvalidByte(v) -> formatter.tuple('InvalidByte').field(v).finish
-      case Read(v) -> formatter.tuple('read').field(v).finish
+      case InvalidSyntax -> formatter.tuple('InvalidSyntax').finish
+      case EndOfInput -> formatter.tuple('EndOfInput').finish
+      case Read(v) -> formatter.tuple('Read').field(v).finish
     }
   }
 }
 
 type copy enum Event {
   case Array(Int)
+  case Int(Int)
   case BulkString(Int)
 }
 
@@ -63,6 +79,7 @@ impl Equal for Event {
   fn pub ==(other: Event) -> Bool {
     match (self, other) {
       case (Array(a), Array(b)) -> a == b
+      case (Int(a), Int(b)) -> a == b
       case (BulkString(a), BulkString(b)) -> a == b
       case _ -> false
     }
@@ -73,6 +90,7 @@ impl Format for Event {
   fn pub fmt(formatter: mut Formatter) {
     match self {
       case Array(v) -> formatter.tuple('Array').field(v).finish
+      case Int(v) -> formatter.tuple('Int').field(v).finish
       case BulkString(v) -> formatter.tuple('BulkString').field(v).finish
     }
   }
@@ -80,48 +98,80 @@ impl Format for Event {
 
 type inline Parser[T: mut + Read] {
   let @reader: T
-  let @buffer: ByteArray
+  let @buffer: mut ByteArray
 
-  fn static new(reader: T) -> Parser[T] {
-    Parser(reader: reader, buffer: ByteArray.new)
+  fn static new(reader: T, buffer: mut ByteArray) -> Parser[T] {
+    Parser(reader: reader, buffer: buffer)
+  }
+
+  fn mut array -> Result[Int, Error] {
+    match parse {
+      case Ok(Array(n)) -> Result.Ok(n)
+      case Ok(_) -> Result.Error(Error.InvalidSyntax)
+      case Error(e) -> Result.Error(e)
+    }
+  }
+
+  fn mut bulk_string -> Result[Int, Error] {
+    match parse {
+      case Ok(BulkString(n)) -> Result.Ok(n)
+      case Ok(_) -> Result.Error(Error.InvalidSyntax)
+      case Error(e) -> Result.Error(e)
+    }
   }
 
   fn mut parse -> Result[Event, Error] {
     match try read_byte {
-      case AST -> Result.Ok(Event.Array(try read_size))
-      case DLR -> Result.Ok(Event.BulkString(try read_size))
-      case v -> throw Error.InvalidByte(v)
+      case AST -> Result.Ok(Event.Array(try size))
+      case DLR -> Result.Ok(Event.BulkString(try size))
+      case CLN -> Result.Ok(Event.Int(try integer))
+      case _ -> throw Error.InvalidSyntax
     }
   }
 
-  fn mut read_size -> Result[Int, Error] {
-    let mut size = 0
+  fn mut size -> Result[Int, Error] {
+    digits(-1)
+  }
+
+  fn mut integer -> Result[Int, Error] {
+    match read_byte {
+      case Ok(ADD) -> size
+      case Ok(SUB) -> Result.Ok(0 - try size)
+      case Ok(v) -> digits(v)
+      case Error(e) -> Result.Error(e)
+    }
+  }
+
+  fn mut digits(initial: Int) -> Result[Int, Error] {
+    let mut val = 0
 
     # The minimum number of bytes is three: one for a single digit, and two for
     # \r\n. This means we can read the initial/minimum amount of necessary data
     # in a single call.
-    try read_exact(3)
+    if initial >= 0 { @buffer.push(initial) }
+
+    try read_exact(3 - @buffer.size)
 
     match (@buffer.get(0), @buffer.get(1), @buffer.get(2)) {
       case (a, CR, LF) if digit?(a) -> {
         @buffer.clear
-        size = parse_digit(size, a)
-        return Result.Ok(size)
+        val = parse_digit(val, a)
+        return Result.Ok(val)
       }
       case (a, b, CR) if digit?(a) and digit?(b) -> {
         @buffer.clear
-        size = parse_digit(size, a)
-        size = parse_digit(size, b)
+        val = parse_digit(val, a)
+        val = parse_digit(val, b)
         try read_lf
-        return Result.Ok(size)
+        return Result.Ok(val)
       }
       case (a, b, c) if digit?(a) and digit?(b) and digit?(c) -> {
         @buffer.clear
-        size = parse_digit(size, a)
-        size = parse_digit(size, b)
-        size = parse_digit(size, c)
+        val = parse_digit(val, a)
+        val = parse_digit(val, b)
+        val = parse_digit(val, c)
       }
-      case (a, _, _) -> throw Error.InvalidByte(a)
+      case _ -> throw Error.InvalidSyntax
     }
 
     # For the remaining input we can only read at most two bytes per time,
@@ -137,34 +187,31 @@ type inline Parser[T: mut + Read] {
         }
         case (a, CR) if digit?(a) -> {
           @buffer.clear
-          size = parse_digit(size, a)
+          val = parse_digit(val, a)
           try read_lf
           break
         }
         case (a, b) if digit?(a) and digit?(b) -> {
           @buffer.clear
-          size = parse_digit(size, a)
-          size = parse_digit(size, b)
+          val = parse_digit(val, a)
+          val = parse_digit(val, b)
         }
-        case (a, _) -> throw Error.InvalidByte(a)
+        case _ -> throw Error.InvalidSyntax
       }
     }
 
-    Result.Ok(size)
+    Result.Ok(val)
   }
 
   fn mut read_byte -> Result[Int, Error] {
-    match read(1) {
-      case Error(e) -> Result.Error(e)
-      case Ok(0) -> Result.Error(Error.Read(IoError.EndOfInput))
-      case Ok(_) -> Result.Ok(@buffer.pop.get)
-    }
+    try read_exact(1)
+    Result.Ok(@buffer.pop.get)
   }
 
   fn mut read_exact(size: Int) -> Result[Nil, Error] {
     match read(size) {
       case Ok(n) if n == size -> Result.Ok(nil)
-      case Ok(_) -> Result.Error(Error.Read(IoError.EndOfInput))
+      case Ok(_) -> Result.Error(Error.EndOfInput)
       case Error(e) -> Result.Error(e)
     }
   }
@@ -172,14 +219,8 @@ type inline Parser[T: mut + Read] {
   fn mut read_lf -> Result[Nil, Error] {
     match try read_byte {
       case LF -> Result.Ok(nil)
-      case v -> Result.Error(Error.InvalidByte(v))
+      case _ -> Result.Error(Error.InvalidSyntax)
     }
-  }
-
-  fn mut skip_byte -> Result[Nil, Error] {
-    try read_byte
-    @buffer.clear
-    Result.Ok(nil)
   }
 
   fn mut read(size: Int) -> Result[Int, Error] {

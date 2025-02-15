@@ -1,5 +1,4 @@
 import kvi.config (Config)
-import kvi.logger (Logger)
 import kvi.server (Server)
 import std.fs.path (Path)
 import std.io (Write)
@@ -42,6 +41,7 @@ fn pub run[W: mut + Write](
     'INT',
     'The fragmentation percentage before defragmentation is needed',
   )
+  opts.single('l', 'log', 'LEVEL', 'The logging level to enable')
 
   let matches = match opts.parse(arguments) {
     case Ok(v) -> v
@@ -82,7 +82,10 @@ fn pub run[W: mut + Write](
     case _ -> {}
   }
 
-  let logger = Logger.new
+  match matches.value('log') {
+    case Some(v) -> try conf.parse_log_level(v)
+    case _ -> {}
+  }
 
-  Server.new(conf, logger).start
+  Server.new(conf).start
 }

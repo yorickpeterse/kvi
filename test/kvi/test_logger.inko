@@ -1,24 +1,36 @@
-import kvi.logger (Logger)
-import std.sync (Future)
+import kvi.logger (Level, Logger)
 import std.test (Tests)
-
-fn flush(logger: Logger) {
-  match Future.new {
-    case (fut, prom) -> {
-      logger.flush(prom)
-      fut.get
-    }
-  }
-}
 
 fn pub tests(t: mut Tests) {
   t.fork(
+    'Logger.debug',
+    child: fn {
+      let log = Logger.new(Level.Debug)
+
+      log.debug('foo')
+      log.flush
+    },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'DEBUG: foo\n') },
+  )
+
+  t.fork(
+    'Logger.debug when logging is disabled',
+    child: fn {
+      let log = Logger.new(Level.None)
+
+      log.debug('foo')
+      log.flush
+    },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, '') },
+  )
+
+  t.fork(
     'Logger.info',
     child: fn {
-      let log = Logger.new
+      let log = Logger.new(Level.Info)
 
       log.info('foo')
-      flush(log)
+      log.flush
     },
     test: fn (t, proc) { t.equal(proc.spawn.stderr, 'INFO: foo\n') },
   )
@@ -26,10 +38,10 @@ fn pub tests(t: mut Tests) {
   t.fork(
     'Logger.info when logging is disabled',
     child: fn {
-      let log = Logger.disabled
+      let log = Logger.new(Level.None)
 
       log.info('foo')
-      flush(log)
+      log.flush
     },
     test: fn (t, proc) { t.equal(proc.spawn.stderr, '') },
   )
@@ -37,10 +49,10 @@ fn pub tests(t: mut Tests) {
   t.fork(
     'Logger.warn',
     child: fn {
-      let log = Logger.new
+      let log = Logger.new(Level.Info)
 
       log.warn('foo')
-      flush(log)
+      log.flush
     },
     test: fn (t, proc) { t.equal(proc.spawn.stderr, 'WARN: foo\n') },
   )
@@ -48,10 +60,10 @@ fn pub tests(t: mut Tests) {
   t.fork(
     'Logger.warn when logging is disabled',
     child: fn {
-      let log = Logger.disabled
+      let log = Logger.new(Level.None)
 
       log.warn('foo')
-      flush(log)
+      log.flush
     },
     test: fn (t, proc) { t.equal(proc.spawn.stderr, '') },
   )
@@ -59,10 +71,10 @@ fn pub tests(t: mut Tests) {
   t.fork(
     'Logger.error',
     child: fn {
-      let log = Logger.new
+      let log = Logger.new(Level.Info)
 
       log.error('foo')
-      flush(log)
+      log.flush
     },
     test: fn (t, proc) { t.equal(proc.spawn.stderr, 'ERROR: foo\n') },
   )
@@ -70,10 +82,10 @@ fn pub tests(t: mut Tests) {
   t.fork(
     'Logger.error when logging is disabled',
     child: fn {
-      let log = Logger.disabled
+      let log = Logger.new(Level.None)
 
       log.error('foo')
-      flush(log)
+      log.flush
     },
     test: fn (t, proc) { t.equal(proc.spawn.stderr, '') },
   )

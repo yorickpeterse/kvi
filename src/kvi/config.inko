@@ -1,3 +1,4 @@
+import kvi.logger (Level)
 import kvi.num (NonZeroInt)
 import std.clone (Clone)
 import std.net.ip (IpAddress)
@@ -34,6 +35,11 @@ type Config {
   # The default is 10%.
   let mut @fragmentation: NonZeroInt
 
+  # The minimum type of log message to enable.
+  #
+  # This defaults to "info".
+  let mut @log_level: Level
+
   fn static new -> Config {
     Config(
       ips: [IpAddress.v4(0, 0, 0, 0)],
@@ -41,6 +47,7 @@ type Config {
       shards: NonZeroInt.new(cpu_cores),
       accepters: NonZeroInt.new(cpu_cores),
       fragmentation: NonZeroInt.new(10),
+      log_level: Level.Info,
     )
   }
 
@@ -88,6 +95,15 @@ type Config {
 
     Result.Ok(nil)
   }
+
+  fn mut parse_log_level(value: String) -> Result[Nil, String] {
+    match Level.parse(value) {
+      case Some(v) -> @log_level = v
+      case _ -> throw "'${value}' is an invalid log level"
+    }
+
+    Result.Ok(nil)
+  }
 }
 
 impl Clone for Config {
@@ -98,6 +114,7 @@ impl Clone for Config {
       shards: @shards,
       accepters: @accepters,
       fragmentation: @fragmentation,
+      log_level: @log_level,
     )
   }
 }

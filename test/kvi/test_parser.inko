@@ -1,50 +1,91 @@
 import kvi.parser (Error, Event, Parser)
-import std.io (Buffer, Error as IoError)
+import std.io (Buffer)
 import std.test (Tests)
 
-fn parser(input: String) -> Parser[Buffer[String]] {
-  Parser.new(Buffer.new(input))
+fn parser(input: String, buffer: mut ByteArray) -> Parser[Buffer[String]] {
+  buffer.clear
+  Parser.new(Buffer.new(input), buffer)
+}
+
+fn parse(input: String) -> Result[Event, Error] {
+  parser(input, ByteArray.new).parse
 }
 
 fn end_of_input[T] -> Result[T, Error] {
-  Result.Error(Error.Read(IoError.EndOfInput))
+  Result.Error(Error.EndOfInput)
 }
 
-fn invalid_byte[T](string: String) -> Result[T, Error] {
-  Result.Error(Error.InvalidByte(string.byte(0)))
+fn invalid_syntax[T] -> Result[T, Error] {
+  Result.Error(Error.InvalidSyntax)
 }
 
 fn pub tests(t: mut Tests) {
-  t.test('Parser.read_size', fn (t) {
-    let p1 = parser('1\r\n')
+  t.test('Parser.size', fn (t) {
+    let buf = ByteArray.new
+    let p1 = parser('1\r\n', buf)
 
-    t.equal(p1.read_size, Result.Ok(1))
+    t.equal(p1.size, Result.Ok(1))
     t.true(p1.buffer.empty?)
 
-    let p2 = parser('12345\r\n')
+    let p2 = parser('12345\r\n', buf)
 
-    t.equal(p2.read_size, Result.Ok(12345))
+    t.equal(p2.size, Result.Ok(12345))
     t.true(p2.buffer.empty?)
 
-    t.equal(parser('1\r\n10').read_size, Result.Ok(1))
-    t.equal(parser('12\r\n').read_size, Result.Ok(12))
-    t.equal(parser('123\r\n').read_size, Result.Ok(123))
-    t.equal(parser('1234\r\n').read_size, Result.Ok(1234))
-    t.equal(parser('12345\r\n').read_size, Result.Ok(12345))
-    t.equal(parser('123456\r\n').read_size, Result.Ok(123456))
-    t.equal(parser('').read_size, end_of_input)
-    t.equal(parser('\r\n').read_size, end_of_input)
-    t.equal(parser('1').read_size, end_of_input)
-    t.equal(parser('12').read_size, end_of_input)
-    t.equal(parser('123').read_size, end_of_input)
-    t.equal(parser('123\r').read_size, end_of_input)
-    t.equal(parser('123\n').read_size, end_of_input)
-    t.equal(parser('123\n\r').read_size, invalid_byte('\n'))
-    t.equal(parser('123ab\r\n').read_size, invalid_byte('a'))
+    t.equal(parser('1\r\n10', buf).size, Result.Ok(1))
+    t.equal(parser('12\r\n', buf).size, Result.Ok(12))
+    t.equal(parser('123\r\n', buf).size, Result.Ok(123))
+    t.equal(parser('1234\r\n', buf).size, Result.Ok(1234))
+    t.equal(parser('12345\r\n', buf).size, Result.Ok(12345))
+    t.equal(parser('123456\r\n', buf).size, Result.Ok(123456))
+
+    t.equal(parser('', buf).size, end_of_input)
+    t.equal(parser('\r\n', buf).size, end_of_input)
+    t.equal(parser('1', buf).size, end_of_input)
+    t.equal(parser('12', buf).size, end_of_input)
+    t.equal(parser('123', buf).size, end_of_input)
+    t.equal(parser('123\r', buf).size, end_of_input)
+    t.equal(parser('123\n', buf).size, end_of_input)
+    t.equal(parser('123\n\r', buf).size, invalid_syntax)
+    t.equal(parser('123ab\r\n', buf).size, invalid_syntax)
   })
 
   t.test('Parser.parse', fn (t) {
-    t.equal(parser('*4\r\n').parse, Result.Ok(Event.Array(4)))
-    t.equal(parser('$4\r\n').parse, Result.Ok(Event.BulkString(4)))
+    t.equal(parse('*4\r\n'), Result.Ok(Event.Array(4)))
+    t.equal(parse('$4\r\n'), Result.Ok(Event.BulkString(4)))
+    t.equal(parse(':0\r\n'), Result.Ok(Event.Int(0)))
+    t.equal(parse(':+0\r\n'), Result.Ok(Event.Int(0)))
+    t.equal(parse(':-0\r\n'), Result.Ok(Event.Int(0)))
+    t.equal(parse(':1234\r\n'), Result.Ok(Event.Int(1234)))
+    t.equal(parse(':+1234\r\n'), Result.Ok(Event.Int(1234)))
+    t.equal(parse(':-1234\r\n'), Result.Ok(Event.Int(-1234)))
+
+    t.equal(parse('*'), end_of_input)
+    t.equal(parse('*4'), end_of_input)
+    t.equal(parse('*4\r'), end_of_input)
+    t.equal(parse('*4ab'), invalid_syntax)
+
+    t.equal(parse('$'), end_of_input)
+    t.equal(parse('$4'), end_of_input)
+    t.equal(parse('$4\r'), end_of_input)
+    t.equal(parse('$4ab'), invalid_syntax)
+
+    t.equal(parse(':'), end_of_input)
+    t.equal(parse(':0'), end_of_input)
+    t.equal(parse(':0\r'), end_of_input)
+    t.equal(parse(':+\r'), end_of_input)
+    t.equal(parse(':+\r\n'), end_of_input)
+    t.equal(parse(':0ab'), invalid_syntax)
+    t.equal(parse(':023ab'), invalid_syntax)
+    t.equal(parse(':0234b'), invalid_syntax)
+  })
+
+  t.test('Parser.array', fn (t) {
+    let buf = ByteArray.new
+
+    t.equal(parser('*0\r\n', buf).array, Result.Ok(0))
+    t.equal(parser('*1\r\n', buf).array, Result.Ok(1))
+    t.equal(parser(':0\r\n', buf).array, invalid_syntax)
+    t.equal(parser('', buf).array, end_of_input)
   })
 }
