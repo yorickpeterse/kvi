@@ -1,7 +1,7 @@
+import kvi.proto.error (Error)
 import std.cmp (Equal)
 import std.fmt (Format, Formatter)
-import std.io (Error as IoError, Read)
-import std.string (ToString)
+import std.io (Read)
 
 let ADD = 43
 let AST = 42
@@ -26,70 +26,6 @@ fn inline parse_digit(current: Int, byte: Int) -> Int {
 
 fn inline digit?(byte: Int) -> Bool {
   byte >= ZERO and byte <= NINE
-}
-
-# An error produced when parsing RESP3 messages.
-#
-# We deliberately don't track things like byte offsets/line numbers/whatever.
-# This information isn't reported back to clients and there's not really a point
-# in logging it either as a server can't do much about clients sending nonsense.
-type copy enum Error {
-  # The syntax is invalid (i.e. we ran into an unexpected byte).
-  case InvalidSyntax
-
-  # A string with the wrong size is found.
-  #
-  # The `Int` is the expected amount of bytes.
-  case InvalidStringSize(Int)
-
-  # A command name is invalid or unsupported.
-  case InvalidCommand
-
-  # The data parsed thus far is valid, but we can out of input while expecting
-  # more.
-  case EndOfInput
-
-  # A generic IO error occurred when reading from the input stream.
-  case Read(IoError)
-}
-
-impl ToString for Error {
-  fn pub to_string -> String {
-    match self {
-      case InvalidSyntax -> 'the syntax is invalid'
-      case InvalidStringSize(n) -> 'expected a string with a size of ${n} bytes'
-      case InvalidCommand -> 'the command is invalid'
-      case EndOfInput -> 'unexpected end of input'
-      case Read(e) -> e.to_string
-    }
-  }
-}
-
-impl Equal for Error {
-  fn pub ==(other: Error) -> Bool {
-    match (self, other) {
-      case (InvalidSyntax, InvalidSyntax) -> true
-      case (InvalidStringSize(a), InvalidStringSize(b)) -> a == b
-      case (InvalidCommand, InvalidCommand) -> true
-      case (EndOfInput, EndOfInput) -> true
-      case (Read(a), Read(b)) -> a == b
-      case _ -> false
-    }
-  }
-}
-
-impl Format for Error {
-  fn pub fmt(formatter: mut Formatter) {
-    match self {
-      case InvalidSyntax -> formatter.tuple('InvalidSyntax').finish
-      case InvalidStringSize(v) -> {
-        formatter.tuple('InvalidStringSize').field(v).finish
-      }
-      case InvalidCommand -> formatter.tuple('InvalidCommand').finish
-      case EndOfInput -> formatter.tuple('EndOfInput').finish
-      case Read(v) -> formatter.tuple('Read').field(v).finish
-    }
-  }
 }
 
 type copy enum Event {
@@ -125,6 +61,45 @@ type copy enum Command {
   case Hello
   case Keys
   case Set
+
+  fn static parse(bytes: ref ByteArray) -> Option[Command] {
+    let len = bytes.size
+
+    # For most commands the first tree bytes form a unique prefix. In some cases
+    # there's a shared prefix (e.g. GET and GETEX), so in such cases we also
+    # need to compare the remainder.
+    #
+    # The end goal of this somewhat complicated `match` is to reduce the amount
+    # of linear scans we need to perform, as parsing commands is something we
+    # expect to do often.
+    #
+    # While this match is a bit ugly, until
+    # https://github.com/inko-lang/inko/issues/827 is addressed it's more or
+    # less the best we can do.
+    match (bytes.get(2) << 16) | (bytes.get(1) << 8) | bytes.get(0) {
+      # DEL[...]
+      case 0x4c4544 -> if len == 3 { return Option.Some(Command.Delete) }
+      # GET[...]
+      case 0x544547 -> if len == 3 { return Option.Some(Command.Get) }
+      # HEL[...]
+      case 0x4c4548 -> {
+        if len == 5 and bytes.ends_with?('LO') {
+          return Option.Some(Command.Hello)
+        }
+      }
+      # KEY[...]
+      case 0x59454b -> {
+        if len == 4 and bytes.ends_with?('S') {
+          return Option.Some(Command.Keys)
+        }
+      }
+      # SET[...]
+      case 0x544553 -> if len == 3 { return Option.Some(Command.Set) }
+      case _ -> {}
+    }
+
+    Option.None
+  }
 }
 
 impl Equal for Command {
@@ -153,84 +128,48 @@ impl Format for Command {
 }
 
 type inline Parser[T: mut + Read] {
-  let @reader: T
+  let @stream: T
   let @buffer: mut ByteArray
 
-  fn static new(reader: T, buffer: mut ByteArray) -> Parser[T] {
-    Parser(reader: reader, buffer: buffer)
+  fn static new(stream: T, buffer: mut ByteArray) -> Parser[T] {
+    Parser(stream: stream, buffer: buffer)
   }
 
   fn mut command -> Result[Command, Error] {
-    let len = try bulk_string
-
-    match len {
-      # The minimum command size is 3 bytes.
-      case 0 or 1 or 2 -> throw Error.InvalidSyntax
-      # The maximum command size is 5 bytes.
-      case n if n > 5 -> throw Error.InvalidSyntax
-      case n -> try read_exact(n)
-    }
-
-    # For most commands the first tree bytes form a unique prefix. In some cases
-    # there's a shared prefix (e.g. GET and GETEX), so in such cases we also
-    # need to compare the remainder.
-    #
-    # The end goal of this somewhat complicated `match` is to reduce the amount
-    # of linear scans we need to perform, as parsing commands is something we
-    # expect to do often.
-    #
-    # While this match is a bit ugly, until
-    # https://github.com/inko-lang/inko/issues/827 is addressed it's more or
-    # less the best we can do.
-    let cmd = match
-      (@buffer.get(2) << 16) | (@buffer.get(1) << 8) | @buffer.get(0)
-    {
-      # DEL[...]
-      case 0x4c4544 -> {
-        if len == 3 { Command.Delete } else { throw Error.InvalidCommand }
-      }
-      # GET[...]
-      case 0x544547 -> {
-        if len == 3 { Command.Get } else { throw Error.InvalidCommand }
-      }
-      # HEL[...]
-      case 0x4c4548 -> {
-        if len == 5 and @buffer.ends_with?('LO') {
-          Command.Hello
-        } else {
-          throw Error.InvalidCommand
-        }
-      }
-      # KEY[...]
-      case 0x59454b -> {
-        if len == 4 and @buffer.ends_with?('S') {
-          Command.Keys
-        } else {
-          throw Error.InvalidCommand
-        }
-      }
-      # SET[...]
-      case 0x544553 -> {
-        if len == 3 { Command.Set } else { throw Error.InvalidCommand }
-      }
-      case _ -> throw Error.InvalidCommand
-    }
-
-    @buffer.clear
+    try read_exact(try bulk_string)
     try read_terminator
-    Result.Ok(cmd)
+
+    match Command.parse(@buffer) {
+      case Some(v) -> {
+        @buffer.clear
+        Result.Ok(v)
+      }
+      case _ -> Result.Error(Error.InvalidCommand(@buffer.drain_to_string))
+    }
   }
 
-  fn mut string_literal(size: Int) -> Result[String, Error] {
-    match try bulk_string {
-      case n if n != size -> throw Error.InvalidStringSize(size)
-      case _ -> try read_exact(size)
+  fn mut string_literal -> Result[String, Error] {
+    try read_exact(try bulk_string)
+    try read_terminator
+    Result.Ok(@buffer.drain_to_string)
+  }
+
+  fn mut skip_bulk_strings(amount: Int) -> Result[Nil, Error] {
+    let mut i = 0
+
+    while i < amount {
+      try skip_bulk_string
+      i += 1
     }
 
-    let val = @buffer.drain_to_string
+    Result.Ok(nil)
+  }
 
+  fn mut skip_bulk_string -> Result[Nil, Error] {
+    try read_exact(try bulk_string)
+    @buffer.clear
     try read_terminator
-    Result.Ok(val)
+    Result.Ok(nil)
   }
 
   fn mut array -> Result[Int, Error] {
@@ -340,7 +279,7 @@ type inline Parser[T: mut + Read] {
   fn inline mut read_exact(size: Int) -> Result[Nil, Error] {
     match read(size) {
       case Ok(n) if n == size -> Result.Ok(nil)
-      case Ok(_) -> Result.Error(Error.EndOfInput)
+      case Ok(_) -> Result.Error(Error.InvalidSyntax)
       case Error(e) -> Result.Error(e)
     }
   }
@@ -360,8 +299,14 @@ type inline Parser[T: mut + Read] {
   }
 
   fn inline mut read(size: Int) -> Result[Int, Error] {
-    match @reader.read(into: @buffer, size: size) {
+    match @stream.read(into: @buffer, size: size) {
+      case Ok(0) -> Result.Error(Error.Closed)
       case Ok(n) -> Result.Ok(n)
+      case Error(ConnectionAborted or ConnectionReset or BrokenPipe) -> {
+        # We normalize these errors so it's easier to handle different
+        # disconnect reasons.
+        Result.Error(Error.Closed)
+      }
       case Error(e) -> Result.Error(Error.Read(e))
     }
   }

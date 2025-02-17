@@ -1,0 +1,67 @@
+import std.cmp (Equal)
+import std.fmt (Format, Formatter)
+import std.io (Error as IoError)
+import std.string (ToString)
+
+# An error produced when processing RESP3 messages.
+#
+# This includes both syntax errors and logical errors, such as the use of an
+# unsupported command or protocol version.
+type inline enum Error {
+  # The syntax is invalid (i.e. we ran into an unexpected byte).
+  case InvalidSyntax
+
+  # The protocol version is invalid.
+  case InvalidVersion
+
+  # A command name is invalid or unsupported.
+  case InvalidCommand(String)
+
+  # The input stream was closed by the client.
+  #
+  # We include this here so it's a bit easier for consumers of the parser to
+  # handle the different reasons a stream might be closed.
+  case Closed
+
+  # A generic IO error occurred when reading from the input stream.
+  case Read(IoError)
+}
+
+impl ToString for Error {
+  fn pub to_string -> String {
+    match self {
+      case InvalidSyntax -> 'the syntax is invalid'
+      case InvalidVersion -> 'the protocol version is unsupported'
+      case InvalidCommand(v) -> "the command '${v}' is unsupported"
+      case Closed -> 'the input stream is closed'
+      case Read(e) -> e.to_string
+    }
+  }
+}
+
+impl Equal for Error {
+  fn pub ==(other: ref Error) -> Bool {
+    match (self, other) {
+      case (InvalidSyntax, InvalidSyntax) -> true
+      case (InvalidVersion, InvalidVersion) -> true
+      case (InvalidCommand(a), InvalidCommand(b)) -> a == b
+      case (Closed, Closed) -> true
+      case (Read(a), Read(b)) -> a == b
+      case _ -> false
+    }
+  }
+}
+
+impl Format for Error {
+  fn pub fmt(formatter: mut Formatter) {
+    match self {
+      case InvalidSyntax -> formatter.tuple('InvalidSyntax').finish
+      case InvalidVersion -> formatter.tuple('InvalidVersion').finish
+      case InvalidCommand(a) -> {
+        formatter.tuple('InvalidCommand').field(a).finish
+      }
+      case Closed -> formatter.tuple('Closed').finish
+      case Read(v) -> formatter.tuple('Read').field(v).finish
+    }
+  }
+}

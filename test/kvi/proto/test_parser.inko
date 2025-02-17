@@ -1,4 +1,5 @@
-import kvi.parser (Command, Error, Event, Parser)
+import kvi.proto.error (Error)
+import kvi.proto.parser (Command, Event, Parser)
 import std.io (Buffer)
 import std.test (Tests)
 
@@ -15,16 +16,12 @@ fn parse(input: String) -> Result[Event, Error] {
   parser(input, ByteArray.new).parse
 }
 
-fn end_of_input[T] -> Result[T, Error] {
-  Result.Error(Error.EndOfInput)
-}
-
 fn invalid_syntax[T] -> Result[T, Error] {
   Result.Error(Error.InvalidSyntax)
 }
 
-fn invalid_command[T] -> Result[T, Error] {
-  Result.Error(Error.InvalidCommand)
+fn invalid_command[T](name: String) -> Result[T, Error] {
+  Result.Error(Error.InvalidCommand(name))
 }
 
 fn pub tests(t: mut Tests) {
@@ -47,13 +44,13 @@ fn pub tests(t: mut Tests) {
     t.equal(parser('12345\r\n', buf).size, Result.Ok(12345))
     t.equal(parser('123456\r\n', buf).size, Result.Ok(123456))
 
-    t.equal(parser('', buf).size, end_of_input)
-    t.equal(parser('\r\n', buf).size, end_of_input)
-    t.equal(parser('1', buf).size, end_of_input)
-    t.equal(parser('12', buf).size, end_of_input)
-    t.equal(parser('123', buf).size, end_of_input)
-    t.equal(parser('123\r', buf).size, end_of_input)
-    t.equal(parser('123\n', buf).size, end_of_input)
+    t.equal(parser('', buf).size, invalid_syntax)
+    t.equal(parser('\r\n', buf).size, invalid_syntax)
+    t.equal(parser('1', buf).size, invalid_syntax)
+    t.equal(parser('12', buf).size, invalid_syntax)
+    t.equal(parser('123', buf).size, invalid_syntax)
+    t.equal(parser('123\r', buf).size, invalid_syntax)
+    t.equal(parser('123\n', buf).size, invalid_syntax)
     t.equal(parser('123\n\r', buf).size, invalid_syntax)
     t.equal(parser('123ab\r\n', buf).size, invalid_syntax)
   })
@@ -68,21 +65,21 @@ fn pub tests(t: mut Tests) {
     t.equal(parse(':+1234\r\n'), Result.Ok(Event.Int(1234)))
     t.equal(parse(':-1234\r\n'), Result.Ok(Event.Int(-1234)))
 
-    t.equal(parse('*'), end_of_input)
-    t.equal(parse('*4'), end_of_input)
-    t.equal(parse('*4\r'), end_of_input)
+    t.equal(parse('*'), invalid_syntax)
+    t.equal(parse('*4'), invalid_syntax)
+    t.equal(parse('*4\r'), invalid_syntax)
     t.equal(parse('*4ab'), invalid_syntax)
 
-    t.equal(parse('$'), end_of_input)
-    t.equal(parse('$4'), end_of_input)
-    t.equal(parse('$4\r'), end_of_input)
+    t.equal(parse('$'), invalid_syntax)
+    t.equal(parse('$4'), invalid_syntax)
+    t.equal(parse('$4\r'), invalid_syntax)
     t.equal(parse('$4ab'), invalid_syntax)
 
-    t.equal(parse(':'), end_of_input)
-    t.equal(parse(':0'), end_of_input)
-    t.equal(parse(':0\r'), end_of_input)
-    t.equal(parse(':+\r'), end_of_input)
-    t.equal(parse(':+\r\n'), end_of_input)
+    t.equal(parse(':'), invalid_syntax)
+    t.equal(parse(':0'), invalid_syntax)
+    t.equal(parse(':0\r'), invalid_syntax)
+    t.equal(parse(':+\r'), invalid_syntax)
+    t.equal(parse(':+\r\n'), invalid_syntax)
     t.equal(parse(':0ab'), invalid_syntax)
     t.equal(parse(':023ab'), invalid_syntax)
     t.equal(parse(':0234b'), invalid_syntax)
@@ -94,7 +91,7 @@ fn pub tests(t: mut Tests) {
     t.equal(parser('*0\r\n', buf).array, Result.Ok(0))
     t.equal(parser('*1\r\n', buf).array, Result.Ok(1))
     t.equal(parser(':0\r\n', buf).array, invalid_syntax)
-    t.equal(parser('', buf).array, end_of_input)
+    t.equal(parser('', buf).array, invalid_syntax)
   })
 
   t.test('Parser.command', fn (t) {
@@ -104,17 +101,13 @@ fn pub tests(t: mut Tests) {
     t.equal(cmd('$4\r\nKEYS\r\n'), Result.Ok(Command.Keys))
     t.equal(cmd('$5\r\nHELLO\r\n'), Result.Ok(Command.Hello))
 
-    t.equal(cmd('$0\r\n'), invalid_syntax)
-    t.equal(cmd('$1\r\n'), invalid_syntax)
-    t.equal(cmd('$2\r\n'), invalid_syntax)
-    t.equal(cmd('$3\r\n'), end_of_input)
-    t.equal(cmd('$3\r\nFOO\r\n'), invalid_command)
-    t.equal(cmd('$4\r\nDELZ\r\n'), invalid_command)
-    t.equal(cmd('$4\r\nGETZ\r\n'), invalid_command)
-    t.equal(cmd('$4\r\nSETZ\r\n'), invalid_command)
-    t.equal(cmd('$4\r\nHELZ\r\n'), invalid_command)
-    t.equal(cmd('$4\r\nKEYZ\r\n'), invalid_command)
-    t.equal(cmd('$5\r\nKEYSS\r\n'), invalid_command)
-    t.equal(cmd('$5\r\nHELLX\r\n'), invalid_command)
+    t.equal(cmd('$3\r\nFOO\r\n'), invalid_command('FOO'))
+    t.equal(cmd('$4\r\nDELZ\r\n'), invalid_command('DELZ'))
+    t.equal(cmd('$4\r\nGETZ\r\n'), invalid_command('GETZ'))
+    t.equal(cmd('$4\r\nSETZ\r\n'), invalid_command('SETZ'))
+    t.equal(cmd('$4\r\nHELZ\r\n'), invalid_command('HELZ'))
+    t.equal(cmd('$4\r\nKEYZ\r\n'), invalid_command('KEYZ'))
+    t.equal(cmd('$5\r\nKEYSS\r\n'), invalid_command('KEYSS'))
+    t.equal(cmd('$5\r\nHELLX\r\n'), invalid_command('HELLX'))
   })
 }

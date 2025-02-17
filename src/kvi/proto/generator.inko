@@ -1,0 +1,29 @@
+import std.string (StringBuffer)
+
+let TERM = '\r\n'
+
+type inline Generator {
+  let @buffer: StringBuffer
+
+  fn static new -> Self {
+    Generator(StringBuffer.new)
+  }
+
+  fn mut map(size: Int) {
+    @buffer.push('%${size}${TERM}')
+  }
+
+  fn mut bulk_string(string: String) {
+    @buffer.push('$${string.size}${TERM}')
+    @buffer.push(string)
+    @buffer.push(TERM)
+  }
+
+  fn mut int(value: Int) {
+    @buffer.push(':${value}${TERM}')
+  }
+
+  fn move into_string -> String {
+    @buffer.into_string
+  }
+}

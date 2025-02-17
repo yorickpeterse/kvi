@@ -1,13 +1,11 @@
 import kvi.config (Config)
 import kvi.logger (Logger)
-import kvi.parser (Error, Parser)
+import kvi.proto.error (Error)
+import kvi.proto.generator (Generator)
+import kvi.proto.parser (Parser)
 import kvi.signal (Signals)
 import std.net.socket (TcpClient, TcpServer)
 import std.signal (Signal)
-
-# TODO: remove
-import std.fmt (fmt)
-import std.stdio (Stdout)
 
 type Server {
   let @config: Config
@@ -129,77 +127,100 @@ type async Connection {
     let socket = recover {
       let socket = recover socket
 
-      # TODO: how would we make this error handling logic reusable?
-      match parse_request(socket) {
+      # TODO: a pipeline may include multiple commands, each needing to act on a
+      # different shard. How do we handle that?
+      #
+      # Treat this as a message, which in turn consists of N commands. A
+      # dedicated Message type is used to track the number of remaining
+      # commands. We need to store the pending message somewhere so we can
+      # resume it.
+      match handle_pipeline(socket) {
         case Ok(_) -> {
           # TODO: act upon request
-          socket
         }
-        # In the event of generic IO errors there's nothing we can do and
-        # logging isn't really useful, so we just shut down the connection.
+        case Error(Closed) -> {
+          @logger.debug('client disconnected')
+          return
+        }
         case Error(Read(e)) -> {
-          let _ = socket.shutdown
-
-          @logger.debug('failed to parse client request: ${e}')
+          @logger.debug('disconnecting due to IO error: ${e}')
           return
         }
         case Error(e) -> {
           let _ = socket.write_string('-ERR ${e}\r\n')
           let _ = socket.shutdown
 
-          @logger.debug('failed to parse client request: ${e}')
+          @logger.debug(e.to_string)
           return
         }
       }
+
+      socket
     }
 
     run(socket)
   }
 
-  # TODO: separate syntax errors (e.g. incorrect sizes) and logical errors (e.g.
-  # an invalid protocol version).
-  fn mut parse_request(socket: mut TcpClient) -> Result[Nil, Error] {
+  fn mut handle_pipeline(socket: mut TcpClient) -> Result[Nil, Error] {
     let parser = Parser.new(socket, @buffer)
-    let mut ary_len = try parser.array
+    let mut vals = try parser.array
 
-    match try parser.command {
-      case Hello -> {
-        match try parser.string_literal(size: 1) {
-          case '3' -> {
-            # TODO: write the actual details
-            # TODO: use generator type instead of writing this by hand
-            let _ = socket.write_string(
-              '%3\r
-$6\r
-server\r
-$3\r
-kvi\r
-$7\r
-version\r
-$5\r
-0.1.0\r
-$5\r
-proto\r
-:3\r\n',
-            )
+    while vals > 0 {
+      vals -= 1
 
-            @logger.debug('finished handshake')
-          }
-          case n -> {
-            @logger.debug('rejected unsupported protocol version ${n}')
-            throw Error.InvalidCommand
+      match parser.command {
+        case Ok(Hello) -> {
+          match try parser.string_literal {
+            case '3' -> {
+              vals -= 1
+
+              # TODO: clean this up, this is ugly
+              # TODO: include actual version number
+              let gen = Generator.new
+
+              gen.map(3)
+              gen.bulk_string('server')
+              gen.bulk_string('kvi')
+              gen.bulk_string('version')
+              gen.bulk_string('TODO')
+              gen.bulk_string('proto')
+              gen.int(3)
+
+              let _ = parser.stream.write_string(gen.into_string)
+            }
+            case n -> {
+              @logger.debug('rejected unsupported protocol version ${n}')
+              throw Error.InvalidVersion
+            }
           }
         }
+        case Ok(Get) -> {
+          vals -= 1
+
+          let key = try parser.string_literal
+
+          # TODO: implement
+          @logger.debug('GET ${key}')
+
+          let _ = socket.write_string('-ERR not yet supported\r\n')
+        }
+        case Ok(_) -> {
+          # TODO: implement
+        }
+        case Error(InvalidCommand(n)) -> {
+          @logger.debug("rejecting invalid command '${n}'")
+
+          let _ = socket.write_string('-ERR the command is invalid\r\n')
+
+          # If a command is invalid/unsupported it may be followed by a sub
+          # command and/or arguments. We need to skip those.
+          try parser.skip_bulk_strings(vals)
+          break
+        }
+        case Error(e) -> throw e
       }
-      case _ -> throw Error.InvalidCommand
     }
 
-    # TODO: *2\r\n$7\r\nCOMMAND\r\n$4\r\nDOCS\r\n
-
-    # TODO: handling of commands is contextual. For example, `COMMAND
-    # DOCS` is just two separate strings. This means that when we parse
-    # `COMMAND` we have to check the array size to see if the command is
-    # given any arguments.
     Result.Ok(nil)
   }
 }
