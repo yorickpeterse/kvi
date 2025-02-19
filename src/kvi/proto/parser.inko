@@ -136,7 +136,7 @@ type inline Parser[T: mut + Read] {
   }
 
   fn mut command -> Result[Command, Error] {
-    try read_exact(try bulk_string)
+    try read(try bulk_string)
     try read_terminator
 
     match Command.parse(@buffer) {
@@ -149,7 +149,7 @@ type inline Parser[T: mut + Read] {
   }
 
   fn mut string_literal -> Result[String, Error] {
-    try read_exact(try bulk_string)
+    try read(try bulk_string)
     try read_terminator
     Result.Ok(@buffer.drain_to_string)
   }
@@ -166,7 +166,7 @@ type inline Parser[T: mut + Read] {
   }
 
   fn mut skip_bulk_string -> Result[Nil, Error] {
-    try read_exact(try bulk_string)
+    try read(try bulk_string)
     @buffer.clear
     try read_terminator
     Result.Ok(nil)
@@ -218,7 +218,7 @@ type inline Parser[T: mut + Read] {
     # in a single call.
     if initial >= 0 { @buffer.push(initial) }
 
-    try read_exact(3 - @buffer.size)
+    try read(3 - @buffer.size)
 
     match (@buffer.get(0), @buffer.get(1), @buffer.get(2)) {
       case (a, CR, LF) if digit?(a) -> {
@@ -246,7 +246,7 @@ type inline Parser[T: mut + Read] {
     # otherwise we might read too much. For example, for the input `123\r\n` the
     # above code reads `123`, leaving us with the remaining `\r\n`.
     loop {
-      try read_exact(2)
+      try read(2)
 
       match (@buffer.get(0), @buffer.get(1)) {
         case (CR, LF) -> {
@@ -272,16 +272,8 @@ type inline Parser[T: mut + Read] {
   }
 
   fn inline mut read_byte -> Result[Int, Error] {
-    try read_exact(1)
+    try read(1)
     Result.Ok(@buffer.pop.get)
-  }
-
-  fn inline mut read_exact(size: Int) -> Result[Nil, Error] {
-    match read(size) {
-      case Ok(n) if n == size -> Result.Ok(nil)
-      case Ok(_) -> Result.Error(Error.InvalidSyntax)
-      case Error(e) -> Result.Error(e)
-    }
   }
 
   fn inline mut read_terminator -> Result[Nil, Error] {
@@ -298,10 +290,10 @@ type inline Parser[T: mut + Read] {
     }
   }
 
-  fn inline mut read(size: Int) -> Result[Int, Error] {
-    match @stream.read(into: @buffer, size: size) {
-      case Ok(0) -> Result.Error(Error.Closed)
-      case Ok(n) -> Result.Ok(n)
+  fn inline mut read(size: Int) -> Result[Nil, Error] {
+    match @stream.read_exact(into: @buffer, size: size) {
+      case Ok(_) -> Result.Ok(nil)
+      case Error(EndOfInput) -> Result.Error(Error.Closed)
       case Error(ConnectionAborted or ConnectionReset or BrokenPipe) -> {
         # We normalize these errors so it's easier to handle different
         # disconnect reasons.

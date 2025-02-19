@@ -16,6 +16,10 @@ fn parse(input: String) -> Result[Event, Error] {
   parser(input, ByteArray.new).parse
 }
 
+fn closed[T] -> Result[T, Error] {
+  Result.Error(Error.Closed)
+}
+
 fn invalid_syntax[T] -> Result[T, Error] {
   Result.Error(Error.InvalidSyntax)
 }
@@ -44,13 +48,13 @@ fn pub tests(t: mut Tests) {
     t.equal(parser('12345\r\n', buf).size, Result.Ok(12345))
     t.equal(parser('123456\r\n', buf).size, Result.Ok(123456))
 
-    t.equal(parser('', buf).size, invalid_syntax)
-    t.equal(parser('\r\n', buf).size, invalid_syntax)
-    t.equal(parser('1', buf).size, invalid_syntax)
-    t.equal(parser('12', buf).size, invalid_syntax)
-    t.equal(parser('123', buf).size, invalid_syntax)
-    t.equal(parser('123\r', buf).size, invalid_syntax)
-    t.equal(parser('123\n', buf).size, invalid_syntax)
+    t.equal(parser('', buf).size, closed)
+    t.equal(parser('\r\n', buf).size, closed)
+    t.equal(parser('1', buf).size, closed)
+    t.equal(parser('12', buf).size, closed)
+    t.equal(parser('123', buf).size, closed)
+    t.equal(parser('123\r', buf).size, closed)
+    t.equal(parser('123\n', buf).size, closed)
     t.equal(parser('123\n\r', buf).size, invalid_syntax)
     t.equal(parser('123ab\r\n', buf).size, invalid_syntax)
   })
@@ -65,21 +69,21 @@ fn pub tests(t: mut Tests) {
     t.equal(parse(':+1234\r\n'), Result.Ok(Event.Int(1234)))
     t.equal(parse(':-1234\r\n'), Result.Ok(Event.Int(-1234)))
 
-    t.equal(parse('*'), invalid_syntax)
-    t.equal(parse('*4'), invalid_syntax)
-    t.equal(parse('*4\r'), invalid_syntax)
+    t.equal(parse('*'), closed)
+    t.equal(parse('*4'), closed)
+    t.equal(parse('*4\r'), closed)
     t.equal(parse('*4ab'), invalid_syntax)
 
-    t.equal(parse('$'), invalid_syntax)
-    t.equal(parse('$4'), invalid_syntax)
-    t.equal(parse('$4\r'), invalid_syntax)
+    t.equal(parse('$'), closed)
+    t.equal(parse('$4'), closed)
+    t.equal(parse('$4\r'), closed)
     t.equal(parse('$4ab'), invalid_syntax)
 
-    t.equal(parse(':'), invalid_syntax)
-    t.equal(parse(':0'), invalid_syntax)
-    t.equal(parse(':0\r'), invalid_syntax)
-    t.equal(parse(':+\r'), invalid_syntax)
-    t.equal(parse(':+\r\n'), invalid_syntax)
+    t.equal(parse(':'), closed)
+    t.equal(parse(':0'), closed)
+    t.equal(parse(':0\r'), closed)
+    t.equal(parse(':+\r'), closed)
+    t.equal(parse(':+\r\n'), closed)
     t.equal(parse(':0ab'), invalid_syntax)
     t.equal(parse(':023ab'), invalid_syntax)
     t.equal(parse(':0234b'), invalid_syntax)
@@ -91,7 +95,7 @@ fn pub tests(t: mut Tests) {
     t.equal(parser('*0\r\n', buf).array, Result.Ok(0))
     t.equal(parser('*1\r\n', buf).array, Result.Ok(1))
     t.equal(parser(':0\r\n', buf).array, invalid_syntax)
-    t.equal(parser('', buf).array, invalid_syntax)
+    t.equal(parser('', buf).array, closed)
   })
 
   t.test('Parser.command', fn (t) {
