@@ -72,7 +72,7 @@ type Server {
 
     # Shutting down the sockets wakes up any sleeping accepter processes,
     # allowing them to shut down cleanly without accepting new connections.
-    sockets.into_iter.each(fn (s) { let _ = s.socket.shutdown })
+    for s in sockets { let _ = s.socket.shutdown }
 
     # Wait for any pending log data to be written, otherwise we might lose that
     # information.
