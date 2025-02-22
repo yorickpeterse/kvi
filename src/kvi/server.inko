@@ -2,7 +2,7 @@ import kvi.config (Config)
 import kvi.logger (Logger)
 import kvi.proto.error (Error)
 import kvi.proto.generator (Generator)
-import kvi.proto.parser (Parser)
+import kvi.proto.parser (Command, Parser)
 import kvi.signal (Signals)
 import std.net.socket (TcpClient, TcpServer)
 import std.signal (Signal)
@@ -134,7 +134,7 @@ type async Connection {
       # dedicated Message type is used to track the number of remaining
       # commands. We need to store the pending message somewhere so we can
       # resume it.
-      match handle_pipeline(socket) {
+      match run_pipeline(socket) {
         case Ok(_) -> {
           # TODO: act upon request
         }
@@ -161,19 +161,30 @@ type async Connection {
     run(socket)
   }
 
-  fn mut handle_pipeline(socket: mut TcpClient) -> Result[Nil, Error] {
-    let parser = Parser.new(socket, @buffer)
-    let mut vals = try parser.array
+  fn mut run_pipeline(socket: mut TcpClient) -> Result[Nil, Error] {
+    let pipe = try Pipeline.new(socket, @buffer)
 
-    while vals > 0 {
-      vals -= 1
+    loop {
+      let cmd = match pipe.next_command {
+        case Some(Ok(v)) -> v
+        case None -> break
+        case Some(Error(InvalidCommand(n))) -> {
+          @logger.debug("rejecting invalid command '${n}'")
 
-      match parser.command {
-        case Ok(Hello) -> {
-          match try parser.string_literal {
+          let _ = socket.write_string('-ERR the command is invalid\r\n')
+
+          # If a command is invalid/unsupported it may be followed by a sub
+          # command and/or arguments. We need to skip those.
+          try pipe.skip_remaining
+          break
+        }
+        case Some(Error(e)) -> throw e
+      }
+
+      match cmd {
+        case Hello -> {
+          match try pipe.string_argument {
             case '3' -> {
-              vals -= 1
-
               # TODO: clean this up, this is ugly
               # TODO: include actual version number
               let gen = Generator.new
@@ -186,7 +197,7 @@ type async Connection {
               gen.bulk_string('proto')
               gen.int(3)
 
-              let _ = parser.stream.write_string(gen.into_string)
+              let _ = socket.write_string(gen.into_string)
             }
             case n -> {
               @logger.debug('rejected unsupported protocol version ${n}')
@@ -194,33 +205,59 @@ type async Connection {
             }
           }
         }
-        case Ok(Get) -> {
-          vals -= 1
-
-          let key = try parser.string_literal
+        case Get -> {
+          let key = try pipe.string_argument
 
           # TODO: implement
           @logger.debug('GET ${key}')
 
-          let _ = socket.write_string('-ERR not yet supported\r\n')
+          let _ = socket.write_string('$-1\r\n')
         }
-        case Ok(_) -> {
-          # TODO: implement
+        case Set -> {
+          # TODO
         }
-        case Error(InvalidCommand(n)) -> {
-          @logger.debug("rejecting invalid command '${n}'")
-
-          let _ = socket.write_string('-ERR the command is invalid\r\n')
-
-          # If a command is invalid/unsupported it may be followed by a sub
-          # command and/or arguments. We need to skip those.
-          try parser.skip_bulk_strings(vals)
-          break
+        case Delete -> {
+          # TODO
         }
-        case Error(e) -> throw e
+        case Keys -> {
+          # TODO
+        }
       }
     }
 
     Result.Ok(nil)
+  }
+}
+
+type Pipeline {
+  let mut @remaining: Int
+  let @parser: Parser[mut TcpClient]
+
+  fn static new(
+    socket: mut TcpClient,
+    buffer: mut ByteArray,
+  ) -> Result[Pipeline, Error] {
+    let parser = Parser.new(socket, buffer)
+    let rem = try parser.array
+
+    Result.Ok(Pipeline(remaining: rem, parser: parser))
+  }
+
+  fn mut next_command -> Option[Result[Command, Error]] {
+    if @remaining > 0 {
+      @remaining -= 1
+      Option.Some(@parser.command)
+    } else {
+      Option.None
+    }
+  }
+
+  fn mut string_argument -> Result[String, Error] {
+    @remaining -= 1
+    @parser.string_literal
+  }
+
+  fn mut skip_remaining -> Result[Nil, Error] {
+    @parser.skip_bulk_strings(@remaining := 0)
   }
 }
