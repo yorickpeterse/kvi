@@ -14,9 +14,9 @@ type async Main {
         let err = Stderr.new
 
         if err.terminal? {
-          let _ = err.write_string('\e[31;1merror\e[0m: ')
+          let _ = err.write('\e[31;1merror\e[0m: ')
         } else {
-          let _ = err.write_string('error: ')
+          let _ = err.write('error: ')
         }
 
         let _ = err.print(e)

@@ -99,7 +99,7 @@ type async LogWriter {
   fn async mut write(level: Level, message: String) {
     # Logging failures aren't a big deal and probably won't happen anyway, so we
     # ignore them.
-    let _ = @output.write_string('${level}: ${message}\n')
+    let _ = @output.write('${level}: ${message}\n')
   }
 }
 

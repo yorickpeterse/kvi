@@ -147,7 +147,7 @@ type async Connection {
           return
         }
         case Error(e) -> {
-          let _ = socket.write_string('-ERR ${e}\r\n')
+          let _ = socket.write('-ERR ${e}\r\n')
           let _ = socket.shutdown
 
           @logger.debug(e.to_string)
@@ -171,7 +171,7 @@ type async Connection {
         case Some(Error(InvalidCommand(n))) -> {
           @logger.debug("rejecting invalid command '${n}'")
 
-          let _ = socket.write_string('-ERR the command is invalid\r\n')
+          let _ = socket.write('-ERR the command is invalid\r\n')
 
           # If a command is invalid/unsupported it may be followed by a sub
           # command and/or arguments. We need to skip those.
@@ -197,7 +197,7 @@ type async Connection {
               gen.bulk_string('proto')
               gen.int(3)
 
-              let _ = socket.write_string(gen.into_string)
+              let _ = socket.write(gen.into_string)
             }
             case n -> {
               @logger.debug('rejected unsupported protocol version ${n}')
@@ -211,7 +211,7 @@ type async Connection {
           # TODO: implement
           @logger.debug('GET ${key}')
 
-          let _ = socket.write_string('$-1\r\n')
+          let _ = socket.write('$-1\r\n')
         }
         case Set -> {
           # TODO

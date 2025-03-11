@@ -14,7 +14,7 @@ fn show_help[W: mut + Write](options: ref Options, output: mut W) {
     .options(options)
     .to_string
 
-  output.write_string(help).get
+  let _ = output.write(help)
 }
 
 fn pub run[W: mut + Write](
@@ -54,7 +54,8 @@ fn pub run[W: mut + Write](
   }
 
   if matches.contains?('version') {
-    stdout.print('kvi ${VERSION}').get
+    let _ = stdout.print('kvi ${VERSION}')
+
     return Result.Ok(nil)
   }
 

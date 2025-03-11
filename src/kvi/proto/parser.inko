@@ -18,8 +18,6 @@ let UPPER_K = 75
 let UPPER_S = 83
 let ZERO = 48
 
-let COMMANDS = ['DEL', 'GET', 'HELLO', 'KEYS', 'SET']
-
 fn inline parse_digit(current: Int, byte: Int) -> Int {
   current.wrapping_mul(10).wrapping_add(byte - ZERO)
 }
@@ -76,7 +74,11 @@ type copy enum Command {
     # While this match is a bit ugly, until
     # https://github.com/inko-lang/inko/issues/827 is addressed it's more or
     # less the best we can do.
-    match (bytes.get(2) << 16) | (bytes.get(1) << 8) | bytes.get(0) {
+    match
+      (bytes.get(2).or(-1) << 16)
+        | (bytes.get(1).or(-1) << 8)
+        | bytes.get(0).or(-1)
+    {
       # DEL[...]
       case 0x4c4544 -> if len == 3 { return Option.Some(Command.Delete) }
       # GET[...]
@@ -221,19 +223,19 @@ type inline Parser[T: mut + Read] {
     try read(3 - @buffer.size)
 
     match (@buffer.get(0), @buffer.get(1), @buffer.get(2)) {
-      case (a, CR, LF) if digit?(a) -> {
+      case (Ok(a), Ok(CR), Ok(LF)) if digit?(a) -> {
         @buffer.clear
         val = parse_digit(val, a)
         return Result.Ok(val)
       }
-      case (a, b, CR) if digit?(a) and digit?(b) -> {
+      case (Ok(a), Ok(b), Ok(CR)) if digit?(a) and digit?(b) -> {
         @buffer.clear
         val = parse_digit(val, a)
         val = parse_digit(val, b)
         try read_lf
         return Result.Ok(val)
       }
-      case (a, b, c) if digit?(a) and digit?(b) and digit?(c) -> {
+      case (Ok(a), Ok(b), Ok(c)) if digit?(a) and digit?(b) and digit?(c) -> {
         @buffer.clear
         val = parse_digit(val, a)
         val = parse_digit(val, b)
@@ -249,17 +251,17 @@ type inline Parser[T: mut + Read] {
       try read(2)
 
       match (@buffer.get(0), @buffer.get(1)) {
-        case (CR, LF) -> {
+        case (Ok(CR), Ok(LF)) -> {
           @buffer.clear
           break
         }
-        case (a, CR) if digit?(a) -> {
+        case (Ok(a), Ok(CR)) if digit?(a) -> {
           @buffer.clear
           val = parse_digit(val, a)
           try read_lf
           break
         }
-        case (a, b) if digit?(a) and digit?(b) -> {
+        case (Ok(a), Ok(b)) if digit?(a) and digit?(b) -> {
           @buffer.clear
           val = parse_digit(val, a)
           val = parse_digit(val, b)
