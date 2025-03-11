@@ -1,0 +1,12 @@
+# The amount of bytes to reserve for each block.
+let BLOCK_SIZE = 1024 * 1024
+
+type inline Block {
+  let @bytes: ByteArray
+}
+
+impl Block {
+  fn static new -> Self {
+    Self(ByteArray.filled(with: 0, times: BLOCK_SIZE))
+  }
+}

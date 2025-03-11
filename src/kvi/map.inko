@@ -1,0 +1,227 @@
+import std.bytes (Slice)
+import std.cmp (Equal)
+
+# The load factor percentage in the (inclusive) range 1 to 10.
+let LOAD_FACTOR = 9
+
+# The initial capacity (in entries) of a Map.
+#
+# This must be a power of two.
+let INITIAL_CAPACITY = 32
+
+fn inline resize_threshold(size: Int) -> Int {
+  LOAD_FACTOR.wrapping_mul(size) / 10
+}
+
+type inline Key {
+  let @name: ByteArray
+  let @hash: Int
+}
+
+impl Equal for Key {
+  fn pub ==(other: ref Key) -> Bool {
+    @name == other.name
+  }
+}
+
+# A key/value pair in a `Map`.
+type inline Entry {
+  # The bytes that make up the key of this entry.
+  let @key: Key
+
+  # The bytes that make up the value of this entry.
+  let @value: Slice[ByteArray]
+
+  # The distance from the desired slot for this entry.
+  let @distance: Int
+
+  fn move with_distance(distance: Int) -> Entry {
+    Entry(key: @key, value: @value, distance: distance)
+  }
+}
+
+# A hash map optimized for storing the data in a shard.
+#
+# The implementation is based on that of `std.map.Map` but with the following
+# differences:
+#
+# - Keys are limited to `ByteArray` values
+# - Ordering is not guaranteed, as we don't need this
+# - Values are limited to `Slice` values
+# - The memory representation is more efficient
+# - Hash codes are calculated ahead of time instead of by the `Map` upon
+#   insertion/lookups
+type Map {
+  # The entries in the map.
+  #
+  # An `Option.None` value signals the slot is available.
+  let @entries: Array[Option[Entry]]
+
+  # The number of values stored in `self`
+  let mut @size: Int
+
+  # The number of values we can store before a resize is necessary.
+  let mut @resize_at: Int
+
+  fn static new -> Map {
+    let entries = Array.with_capacity(INITIAL_CAPACITY)
+    let resize_at = resize_threshold(entries.capacity)
+
+    # Entry doesn't implement `Clone` so we can't use `Array.filled` and instead
+    # have to manually fill it with the default values.
+    for _ in 0.until(entries.capacity) { entries.push(Option.None) }
+
+    Map(entries: entries, size: 0, resize_at: resize_at)
+  }
+
+  # Retrieves the value of the given key, if there is any.
+  fn get(key: ref Key) -> Option[Slice[ByteArray]] {
+    match index_for(key) {
+      case Some(i) -> {
+        match @entries.get(i) {
+          case Ok(Some(v)) -> Option.Some(v.value.clone)
+          case _ -> Option.None
+        }
+      }
+      case _ -> Option.None
+    }
+  }
+
+  # Inserts the key and value into `self`.
+  fn mut set(key: Key, value: Slice[ByteArray]) {
+    if @size >= @resize_at { resize }
+
+    insert(Entry(key: key, value: value, distance: 0))
+  }
+
+  # Removes the key from `self`, returning `true` if it was present prior to
+  # removal.
+  fn mut remove(key: ref Key) -> Bool {
+    let idx = match index_for(key) {
+      case Some(v) -> v
+      case _ -> return false
+    }
+
+    @entries.set(idx, Option.None)
+    @size = @size.wrapping_sub(1)
+
+    # Now we need to backwards shift entries that come _after_ the one we just
+    # removed, but only if they actually desire a better (= preceding) index.
+    let mut prev = idx
+    let mut idx = desired_index_for(idx.wrapping_add(1))
+
+    loop {
+      let dist = match @entries.get(idx).or_panic {
+        case Some(v) if v.distance > 0 -> v.distance
+        case _ -> break
+      }
+
+      # At this point it's guaranteed that the index points to a Some(Entry).
+      let entry = @entries.swap(idx, Option.None).get.with_distance(
+        dist.wrapping_sub(1),
+      )
+
+      @entries.set(prev, Option.Some(entry))
+      prev = idx
+      idx = desired_index_for(idx.wrapping_add(1))
+    }
+
+    true
+  }
+
+  fn mut resize {
+    # This reserves space for _additional_ values, which due to it being the
+    # existing size will double the space.
+    @entries.reserve(@entries.size)
+
+    for _ in 0.until(@entries.size) { @entries.push(Option.None) }
+
+    # Now we can update the threshold according to the new size.
+    @resize_at = resize_threshold(@entries.size)
+
+    # First we have to reset the distance to a sentinel value such that we can
+    # tell the difference between entries that still need to be rehashed, and
+    # those that are rehashed into their ideal slots.
+    for idx in 0.until(@entries.size) {
+      match @entries.swap(idx, Option.None) {
+        case Some(v) -> @entries.set(idx, Option.Some(v.with_distance(-1)))
+        case _ -> {}
+      }
+    }
+
+    for idx in 0.until(@entries.size) {
+      match @entries.swap(idx, Option.None) {
+        case Some(v) if v.distance == -1 -> insert(v.with_distance(0))
+        case ex -> @entries.set(idx, ex)
+      }
+    }
+  }
+
+  fn mut insert(new: Entry) {
+    let mut idx = desired_index_for(new.key.hash)
+    let mut insert = new
+
+    loop {
+      let mut existing = match @entries.swap(idx, Option.None) {
+        case Some(v) -> v
+        case _ -> {
+          @entries.set(idx, Option.Some(insert))
+          @size = @size.wrapping_add(1)
+          return
+        }
+      }
+
+      if existing.key == insert.key {
+        @entries.set(idx, Option.Some(insert))
+        return
+      }
+
+      # If the entry we want to insert is further from its desired distance than
+      # the existing entry, we'll swap the two and shift the existing entry to
+      # the right.
+      if existing.distance < insert.distance {
+        @entries.set(idx, Option.Some(insert))
+        insert = existing
+      } else {
+        @entries.set(idx, Option.Some(existing))
+      }
+
+      let dist = insert.distance.wrapping_add(1)
+
+      idx = desired_index_for(idx.wrapping_add(1))
+      insert = insert.with_distance(dist)
+    }
+  }
+
+  fn index_for(key: ref Key) -> Option[Int] {
+    let mut idx = desired_index_for(key.hash)
+    let mut dist = 0
+
+    loop {
+      # The index is always in bounds, so barring any bugs in the implementation
+      # the panic is never triggered.
+      let entry = match @entries.get(idx).or_panic {
+        case Some(v) -> v
+        case _ -> return Option.None
+      }
+
+      # If our current distance is greater than that of the existing entry, the
+      # entry we're looking for will never be found in the following entries, so
+      # we bail out here.
+      if dist > entry.distance { return Option.None }
+
+      # Different keys may hash to the same value, so we need to compare the
+      # keys to make sure we are in fact operating on the expected entry.
+      if entry.key == key { return Option.Some(idx) }
+
+      idx = desired_index_for(idx.wrapping_add(1))
+      dist += 1
+    }
+  }
+
+  fn inline desired_index_for(hash: Int) -> Int {
+    # The number of entries is always a power of two, so we can use & here
+    # instead of the more expensive % operator.
+    hash & @entries.size.wrapping_sub(1)
+  }
+}

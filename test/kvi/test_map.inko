@@ -1,0 +1,77 @@
+import kvi.map (INITIAL_CAPACITY, Key, Map, resize_threshold)
+import std.hash.siphash (SipHasher13)
+import std.test (Tests)
+
+fn key(name: String) -> Key {
+  let hasher = SipHasher13.new(0, 0)
+
+  name.hash(hasher)
+  key_with_hash(name, hasher.finish)
+}
+
+fn key_with_hash(name: String, hash: Int) -> Key {
+  Key(name: name.to_byte_array, hash: hash)
+}
+
+fn pub tests(t: mut Tests) {
+  t.test('Map.new', fn (t) {
+    let map = Map.new
+
+    t.equal(map.entries.size, INITIAL_CAPACITY)
+    t.equal(map.entries.capacity, INITIAL_CAPACITY)
+    t.equal(map.size, 0)
+    t.equal(map.resize_at, resize_threshold(INITIAL_CAPACITY))
+  })
+
+  t.test('Map.get', fn (t) {
+    let val = 'value'.to_byte_array
+    let slice = val.slice(0, 5)
+    let map = Map.new
+
+    t.equal(map.size, 0)
+    map.set(key('key'), slice.clone)
+    t.equal(map.size, 1)
+    t.equal(map.get(key('key')), Option.Some(slice))
+    t.equal(map.get(key('foo')), Option.None)
+    t.equal(map.get(key('foo')), Option.None)
+  })
+
+  t.test('Map.set with an existing key', fn (t) {
+    let val = 'value'.to_byte_array
+    let map = Map.new
+
+    map.set(key('a'), val.slice(0, 2))
+    map.set(key('a'), val.slice(0, 5))
+    map.set(key('b'), val.slice(0, 1))
+
+    t.equal(map.size, 2)
+    t.equal(map.get(key('a')), Option.Some(val.slice(0, 5)))
+    t.equal(map.get(key('b')), Option.Some(val.slice(0, 1)))
+  })
+
+  t.test('Map.set with two keys with the same slot', fn (t) {
+    let val = 'value'.to_byte_array
+    let map = Map.new
+
+    map.set(key_with_hash('a', 1), val.slice(0, 1))
+    map.set(key_with_hash('b', 1), val.slice(0, 5))
+
+    t.equal(map.size, 2)
+    t.equal(map.get(key_with_hash('a', 1)), Option.Some(val.slice(0, 1)))
+    t.equal(map.get(key_with_hash('b', 1)), Option.Some(val.slice(0, 5)))
+
+    let a = map.entries.get(1).get.as_ref.get
+    let b = map.entries.get(2).get.as_ref.get
+
+    t.equal(a.key.name, 'a'.to_byte_array)
+    t.equal(a.key.hash, 1)
+    t.equal(a.distance, 0)
+
+    t.equal(b.key.name, 'b'.to_byte_array)
+    t.equal(b.key.hash, 1)
+    t.equal(b.distance, 1)
+  })
+
+  # TODO: Map.set with different distances
+  # TODO: Map.set with a resize
+}
