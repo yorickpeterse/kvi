@@ -49,29 +49,112 @@ fn pub tests(t: mut Tests) {
     t.equal(map.get(key('b')), Option.Some(val.slice(0, 1)))
   })
 
-  t.test('Map.set with two keys with the same slot', fn (t) {
+  t.test('Map.set with collisions', fn (t) {
     let val = 'value'.to_byte_array
     let map = Map.new
 
     map.set(key_with_hash('a', 1), val.slice(0, 1))
-    map.set(key_with_hash('b', 1), val.slice(0, 5))
+    map.set(key_with_hash('b', 1), val.slice(0, 2))
+    map.set(key_with_hash('c', 1), val.slice(0, 3))
+    map.set(key_with_hash('d', 1), val.slice(0, 4))
+    map.set(key_with_hash('e', 31), val.slice(1, 1))
+    map.set(key_with_hash('f', 32), val.slice(1, 2))
+    map.set(key_with_hash('g', 32), val.slice(1, 3))
 
-    t.equal(map.size, 2)
+    t.equal(map.size, 7)
     t.equal(map.get(key_with_hash('a', 1)), Option.Some(val.slice(0, 1)))
-    t.equal(map.get(key_with_hash('b', 1)), Option.Some(val.slice(0, 5)))
+    t.equal(map.get(key_with_hash('b', 1)), Option.Some(val.slice(0, 2)))
+    t.equal(map.get(key_with_hash('c', 1)), Option.Some(val.slice(0, 3)))
+    t.equal(map.get(key_with_hash('d', 1)), Option.Some(val.slice(0, 4)))
+    t.equal(map.get(key_with_hash('e', 31)), Option.Some(val.slice(1, 1)))
+    t.equal(map.get(key_with_hash('f', 32)), Option.Some(val.slice(1, 2)))
+    t.equal(map.get(key_with_hash('g', 32)), Option.Some(val.slice(1, 3)))
 
-    let a = map.entries.get(1).get.as_ref.get
+    let a = map.entries.get(5).get.as_ref.get
     let b = map.entries.get(2).get.as_ref.get
+    let c = map.entries.get(3).get.as_ref.get
+    let d = map.entries.get(4).get.as_ref.get
+    let e = map.entries.get(31).get.as_ref.get
+    let f = map.entries.get(0).get.as_ref.get
+    let g = map.entries.get(1).get.as_ref.get
 
     t.equal(a.key.name, 'a'.to_byte_array)
     t.equal(a.key.hash, 1)
-    t.equal(a.distance, 0)
+    t.equal(a.distance, 4)
 
     t.equal(b.key.name, 'b'.to_byte_array)
     t.equal(b.key.hash, 1)
     t.equal(b.distance, 1)
+
+    t.equal(c.key.name, 'c'.to_byte_array)
+    t.equal(c.key.hash, 1)
+    t.equal(c.distance, 2)
+
+    t.equal(d.key.name, 'd'.to_byte_array)
+    t.equal(d.key.hash, 1)
+    t.equal(d.distance, 3)
+
+    t.equal(e.key.name, 'e'.to_byte_array)
+    t.equal(e.key.hash, 31)
+    t.equal(e.distance, 0)
+
+    t.equal(f.key.name, 'f'.to_byte_array)
+    t.equal(f.key.hash, 32)
+    t.equal(f.distance, 0)
+
+    t.equal(g.key.name, 'g'.to_byte_array)
+    t.equal(g.key.hash, 32)
+    t.equal(g.distance, 1)
   })
 
-  # TODO: Map.set with different distances
-  # TODO: Map.set with a resize
+  t.test('Map.set when the Map needs to be resized', fn (t) {
+    let val = 'value'.to_byte_array
+    let map = Map.new
+
+    INITIAL_CAPACITY.times(fn (i) {
+      map.set(Key(name: ByteArray.from_array([i]), hash: i), val.slice(0, 1))
+    })
+
+    t.equal(map.size, INITIAL_CAPACITY)
+    t.equal(map.entries.size, INITIAL_CAPACITY * 2)
+    t.equal(map.entries.capacity, map.entries.size)
+    t.equal(map.resize_at, resize_threshold(INITIAL_CAPACITY * 2))
+
+    INITIAL_CAPACITY.times(fn (i) {
+      let key = Key(name: ByteArray.from_array([i]), hash: i)
+
+      t.equal(map.get(key), Option.Some(val.slice(0, 1)))
+    })
+
+    for opt in map.entries.iter {
+      match opt {
+        case Some(v) -> t.not_equal(v.distance, -1)
+        case _ -> {}
+      }
+    }
+  })
+
+  t.test('Map.remove', fn (t) {
+    let val = 'value'.to_byte_array
+    let map = Map.new
+
+    map.set(key_with_hash('a', 1), val.slice(0, 1))
+    map.set(key_with_hash('b', 1), val.slice(0, 2))
+    map.set(key_with_hash('c', 2), val.slice(0, 3))
+
+    t.equal(map.size, 3)
+
+    t.true(map.remove(key_with_hash('a', 1)))
+    t.false(map.remove(key_with_hash('a', 1)))
+    t.equal(map.size, 2)
+
+    let b = map.entries.get(1).get.as_ref.get
+    let c = map.entries.get(2).get.as_ref.get
+
+    t.equal(b.key.name, 'b'.to_byte_array)
+    t.equal(b.distance, 0)
+
+    t.equal(c.key.name, 'c'.to_byte_array)
+    t.equal(c.distance, 0)
+  })
 }

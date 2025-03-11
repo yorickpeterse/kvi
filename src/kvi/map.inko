@@ -1,3 +1,4 @@
+# An optimized hash map.
 import std.bytes (Slice)
 import std.cmp (Equal)
 
@@ -13,13 +14,14 @@ fn inline resize_threshold(size: Int) -> Int {
   LOAD_FACTOR.wrapping_mul(size) / 10
 }
 
+# A key and its hash code.
 type inline Key {
   let @name: ByteArray
   let @hash: Int
 }
 
 impl Equal for Key {
-  fn pub ==(other: ref Key) -> Bool {
+  fn pub inline ==(other: ref Key) -> Bool {
     @name == other.name
   }
 }
@@ -35,7 +37,7 @@ type inline Entry {
   # The distance from the desired slot for this entry.
   let @distance: Int
 
-  fn move with_distance(distance: Int) -> Entry {
+  fn inline move with_distance(distance: Int) -> Entry {
     Entry(key: @key, value: @value, distance: distance)
   }
 }
@@ -148,6 +150,9 @@ type Map {
         case _ -> {}
       }
     }
+
+    # We need to reset the size because we increment it as part of rehashing.
+    @size = 0
 
     for idx in 0.until(@entries.size) {
       match @entries.swap(idx, Option.None) {
