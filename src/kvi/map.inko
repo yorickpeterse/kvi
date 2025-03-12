@@ -1,5 +1,4 @@
 # An optimized hash map.
-import std.bytes (Slice)
 import std.cmp (Equal)
 
 # The load factor percentage in the (inclusive) range 1 to 10.
@@ -15,29 +14,24 @@ fn inline resize_threshold(size: Int) -> Int {
 }
 
 # A key and its hash code.
-type inline Key {
-  let @name: ByteArray
+type inline Key[K: Equal] {
+  let @name: K
   let @hash: Int
 }
 
 impl Equal for Key {
-  fn pub inline ==(other: ref Key) -> Bool {
+  fn pub inline ==(other: ref Self) -> Bool {
     @name == other.name
   }
 }
 
 # A key/value pair in a `Map`.
-type inline Entry {
-  # The bytes that make up the key of this entry.
-  let @key: Key
-
-  # The bytes that make up the value of this entry.
-  let @value: Slice[ByteArray]
-
-  # The distance from the desired slot for this entry.
+type inline Entry[K: Equal, V] {
+  let @key: Key[K]
+  let @value: V
   let @distance: Int
 
-  fn inline move with_distance(distance: Int) -> Entry {
+  fn inline move with_distance(distance: Int) -> Self {
     Entry(key: @key, value: @value, distance: distance)
   }
 }
@@ -47,17 +41,15 @@ type inline Entry {
 # The implementation is based on that of `std.map.Map` but with the following
 # differences:
 #
-# - Keys are limited to `ByteArray` values
 # - Ordering is not guaranteed, as we don't need this
-# - Values are limited to `Slice` values
 # - The memory representation is more efficient
 # - Hash codes are calculated ahead of time instead of by the `Map` upon
 #   insertion/lookups
-type Map {
+type Map[K: Equal, V] {
   # The entries in the map.
   #
   # An `Option.None` value signals the slot is available.
-  let @entries: Array[Option[Entry]]
+  let @entries: Array[Option[Entry[K, V]]]
 
   # The number of values stored in `self`
   let mut @size: Int
@@ -65,7 +57,7 @@ type Map {
   # The number of values we can store before a resize is necessary.
   let mut @resize_at: Int
 
-  fn static new -> Map {
+  fn static new -> Self {
     let entries = Array.with_capacity(INITIAL_CAPACITY)
     let resize_at = resize_threshold(entries.capacity)
 
@@ -77,11 +69,11 @@ type Map {
   }
 
   # Retrieves the value of the given key, if there is any.
-  fn get(key: ref Key) -> Option[Slice[ByteArray]] {
+  fn get(key: ref Key[K]) -> Option[ref V] {
     match index_for(key) {
       case Some(i) -> {
         match @entries.get(i) {
-          case Ok(Some(v)) -> Option.Some(v.value.clone)
+          case Ok(Some(v)) -> Option.Some(v.value)
           case _ -> Option.None
         }
       }
@@ -90,7 +82,7 @@ type Map {
   }
 
   # Inserts the key and value into `self`.
-  fn mut set(key: Key, value: Slice[ByteArray]) {
+  fn mut set(key: Key[K], value: V) {
     if @size >= @resize_at { resize }
 
     insert(Entry(key: key, value: value, distance: 0))
@@ -98,7 +90,7 @@ type Map {
 
   # Removes the key from `self`, returning `true` if it was present prior to
   # removal.
-  fn mut remove(key: ref Key) -> Bool {
+  fn mut remove(key: ref Key[K]) -> Bool {
     let idx = match index_for(key) {
       case Some(v) -> v
       case _ -> return false
@@ -162,7 +154,7 @@ type Map {
     }
   }
 
-  fn mut insert(new: Entry) {
+  fn mut insert(new: Entry[K, V]) {
     let mut idx = desired_index_for(new.key.hash)
     let mut insert = new
 
@@ -198,7 +190,7 @@ type Map {
     }
   }
 
-  fn index_for(key: ref Key) -> Option[Int] {
+  fn index_for(key: ref Key[K]) -> Option[Int] {
     let mut idx = desired_index_for(key.hash)
     let mut dist = 0
 

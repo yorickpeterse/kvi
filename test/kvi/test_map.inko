@@ -2,20 +2,20 @@ import kvi.map (INITIAL_CAPACITY, Key, Map, resize_threshold)
 import std.hash.siphash (SipHasher13)
 import std.test (Tests)
 
-fn key(name: String) -> Key {
+fn key(name: String) -> Key[String] {
   let hasher = SipHasher13.new(0, 0)
 
   name.hash(hasher)
   key_with_hash(name, hasher.finish)
 }
 
-fn key_with_hash(name: String, hash: Int) -> Key {
-  Key(name: name.to_byte_array, hash: hash)
+fn key_with_hash(name: String, hash: Int) -> Key[String] {
+  Key(name: name, hash: hash)
 }
 
 fn pub tests(t: mut Tests) {
   t.test('Map.new', fn (t) {
-    let map = Map.new
+    let map: Map[String, String] = Map.new
 
     t.equal(map.entries.size, INITIAL_CAPACITY)
     t.equal(map.entries.capacity, INITIAL_CAPACITY)
@@ -24,51 +24,47 @@ fn pub tests(t: mut Tests) {
   })
 
   t.test('Map.get', fn (t) {
-    let val = 'value'.to_byte_array
-    let slice = val.slice(0, 5)
     let map = Map.new
 
     t.equal(map.size, 0)
-    map.set(key('key'), slice.clone)
+    map.set(key('key'), 42)
     t.equal(map.size, 1)
-    t.equal(map.get(key('key')), Option.Some(slice))
+    t.equal(map.get(key('key')), Option.Some(42))
     t.equal(map.get(key('foo')), Option.None)
     t.equal(map.get(key('foo')), Option.None)
   })
 
   t.test('Map.set with an existing key', fn (t) {
-    let val = 'value'.to_byte_array
     let map = Map.new
 
-    map.set(key('a'), val.slice(0, 2))
-    map.set(key('a'), val.slice(0, 5))
-    map.set(key('b'), val.slice(0, 1))
+    map.set(key('a'), 1)
+    map.set(key('a'), 2)
+    map.set(key('b'), 3)
 
     t.equal(map.size, 2)
-    t.equal(map.get(key('a')), Option.Some(val.slice(0, 5)))
-    t.equal(map.get(key('b')), Option.Some(val.slice(0, 1)))
+    t.equal(map.get(key('a')), Option.Some(2))
+    t.equal(map.get(key('b')), Option.Some(3))
   })
 
   t.test('Map.set with collisions', fn (t) {
-    let val = 'value'.to_byte_array
     let map = Map.new
 
-    map.set(key_with_hash('a', 1), val.slice(0, 1))
-    map.set(key_with_hash('b', 1), val.slice(0, 2))
-    map.set(key_with_hash('c', 1), val.slice(0, 3))
-    map.set(key_with_hash('d', 1), val.slice(0, 4))
-    map.set(key_with_hash('e', 31), val.slice(1, 1))
-    map.set(key_with_hash('f', 32), val.slice(1, 2))
-    map.set(key_with_hash('g', 32), val.slice(1, 3))
+    map.set(key_with_hash('a', 1), 1)
+    map.set(key_with_hash('b', 1), 2)
+    map.set(key_with_hash('c', 1), 3)
+    map.set(key_with_hash('d', 1), 4)
+    map.set(key_with_hash('e', 31), 5)
+    map.set(key_with_hash('f', 32), 6)
+    map.set(key_with_hash('g', 32), 7)
 
     t.equal(map.size, 7)
-    t.equal(map.get(key_with_hash('a', 1)), Option.Some(val.slice(0, 1)))
-    t.equal(map.get(key_with_hash('b', 1)), Option.Some(val.slice(0, 2)))
-    t.equal(map.get(key_with_hash('c', 1)), Option.Some(val.slice(0, 3)))
-    t.equal(map.get(key_with_hash('d', 1)), Option.Some(val.slice(0, 4)))
-    t.equal(map.get(key_with_hash('e', 31)), Option.Some(val.slice(1, 1)))
-    t.equal(map.get(key_with_hash('f', 32)), Option.Some(val.slice(1, 2)))
-    t.equal(map.get(key_with_hash('g', 32)), Option.Some(val.slice(1, 3)))
+    t.equal(map.get(key_with_hash('a', 1)), Option.Some(1))
+    t.equal(map.get(key_with_hash('b', 1)), Option.Some(2))
+    t.equal(map.get(key_with_hash('c', 1)), Option.Some(3))
+    t.equal(map.get(key_with_hash('d', 1)), Option.Some(4))
+    t.equal(map.get(key_with_hash('e', 31)), Option.Some(5))
+    t.equal(map.get(key_with_hash('f', 32)), Option.Some(6))
+    t.equal(map.get(key_with_hash('g', 32)), Option.Some(7))
 
     let a = map.entries.get(5).get.as_ref.get
     let b = map.entries.get(2).get.as_ref.get
@@ -78,42 +74,39 @@ fn pub tests(t: mut Tests) {
     let f = map.entries.get(0).get.as_ref.get
     let g = map.entries.get(1).get.as_ref.get
 
-    t.equal(a.key.name, 'a'.to_byte_array)
+    t.equal(a.key.name, 'a')
     t.equal(a.key.hash, 1)
     t.equal(a.distance, 4)
 
-    t.equal(b.key.name, 'b'.to_byte_array)
+    t.equal(b.key.name, 'b')
     t.equal(b.key.hash, 1)
     t.equal(b.distance, 1)
 
-    t.equal(c.key.name, 'c'.to_byte_array)
+    t.equal(c.key.name, 'c')
     t.equal(c.key.hash, 1)
     t.equal(c.distance, 2)
 
-    t.equal(d.key.name, 'd'.to_byte_array)
+    t.equal(d.key.name, 'd')
     t.equal(d.key.hash, 1)
     t.equal(d.distance, 3)
 
-    t.equal(e.key.name, 'e'.to_byte_array)
+    t.equal(e.key.name, 'e')
     t.equal(e.key.hash, 31)
     t.equal(e.distance, 0)
 
-    t.equal(f.key.name, 'f'.to_byte_array)
+    t.equal(f.key.name, 'f')
     t.equal(f.key.hash, 32)
     t.equal(f.distance, 0)
 
-    t.equal(g.key.name, 'g'.to_byte_array)
+    t.equal(g.key.name, 'g')
     t.equal(g.key.hash, 32)
     t.equal(g.distance, 1)
   })
 
   t.test('Map.set when the Map needs to be resized', fn (t) {
-    let val = 'value'.to_byte_array
     let map = Map.new
 
-    INITIAL_CAPACITY.times(fn (i) {
-      map.set(Key(name: ByteArray.from_array([i]), hash: i), val.slice(0, 1))
-    })
+    INITIAL_CAPACITY.times(fn (i) { map.set(Key(name: i, hash: i), i) })
 
     t.equal(map.size, INITIAL_CAPACITY)
     t.equal(map.entries.size, INITIAL_CAPACITY * 2)
@@ -121,9 +114,9 @@ fn pub tests(t: mut Tests) {
     t.equal(map.resize_at, resize_threshold(INITIAL_CAPACITY * 2))
 
     INITIAL_CAPACITY.times(fn (i) {
-      let key = Key(name: ByteArray.from_array([i]), hash: i)
+      let key = Key(name: i, hash: i)
 
-      t.equal(map.get(key), Option.Some(val.slice(0, 1)))
+      t.equal(map.get(key), Option.Some(i))
     })
 
     for opt in map.entries.iter {
@@ -135,12 +128,11 @@ fn pub tests(t: mut Tests) {
   })
 
   t.test('Map.remove', fn (t) {
-    let val = 'value'.to_byte_array
     let map = Map.new
 
-    map.set(key_with_hash('a', 1), val.slice(0, 1))
-    map.set(key_with_hash('b', 1), val.slice(0, 2))
-    map.set(key_with_hash('c', 2), val.slice(0, 3))
+    map.set(key_with_hash('a', 1), 1)
+    map.set(key_with_hash('b', 1), 2)
+    map.set(key_with_hash('c', 2), 3)
 
     t.equal(map.size, 3)
 
@@ -151,10 +143,10 @@ fn pub tests(t: mut Tests) {
     let b = map.entries.get(1).get.as_ref.get
     let c = map.entries.get(2).get.as_ref.get
 
-    t.equal(b.key.name, 'b'.to_byte_array)
+    t.equal(b.key.name, 'b')
     t.equal(b.distance, 0)
 
-    t.equal(c.key.name, 'c'.to_byte_array)
+    t.equal(c.key.name, 'c')
     t.equal(c.distance, 0)
   })
 }
