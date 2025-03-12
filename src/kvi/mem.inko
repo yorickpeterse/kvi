@@ -1,12 +1,150 @@
+import std.bytes (Slice)
+import std.io (Error, Read)
+
 # The amount of bytes to reserve for each block.
 let BLOCK_SIZE = 1024 * 1024
 
-type inline Block {
-  let @bytes: ByteArray
+# The fragmentation percentage allowed before blocks need to be defragmented.
+let FRAGMENTATION_THRESHOLD = 0.2
+
+type inline enum Allocation {
+  case Ok(Value)
+  case NotEnoughSpace(Int)
+  case Error(Error)
 }
 
-impl Block {
+# A block of memory to allocate small values into.
+#
+# A Block is just a wrapper around a ByteArray. We don't use mmap as it's not a
+# good fit for databases ([Are You Sure You Want to Use MMAP in Your Database
+# Management System?](https://www.cidrdb.org/cidr2022/papers/p13-crotty.pdf)).
+type Block {
+  let @bytes: ByteArray
+
+  # The amount of reusable bytes in this block.
+  #
+  # This amount is incremented whenever an allocation doesn't fit or when a
+  # value is discarded.
+  let mut @reusable: Int
+
   fn static new -> Self {
-    Self(ByteArray.filled(with: 0, times: BLOCK_SIZE))
+    Self(bytes: ByteArray.with_capacity(BLOCK_SIZE), reusable: 0)
+  }
+
+  fn mut allocate[R: mut + Read](reader: mut R, size: Int) -> Allocation {
+    let rem = remaining
+
+    if size > rem {
+      @reusable = @reusable.wrapping_add(rem)
+      return Allocation.NotEnoughSpace(rem)
+    }
+
+    let start = @bytes.size
+
+    match reader.read_exact(@bytes, size) {
+      case Ok(_) -> Allocation.Ok(Value.Small(@bytes.slice(start, @bytes.size)))
+      case Error(e) -> Allocation.Error(e)
+    }
+  }
+
+  fn remaining -> Int {
+    @bytes.capacity.wrapping_sub(@bytes.size)
+  }
+
+  fn defragment? -> Bool {
+    @reusable.to_float / BLOCK_SIZE.to_float * 100.0 >= FRAGMENTATION_THRESHOLD
+  }
+}
+
+type inline enum Value {
+  case Small(Slice[ByteArray])
+  case Large(ByteArray)
+}
+
+type Allocator {
+  # All the blocks owned by this allocator.
+  let mut @blocks: Array[Block]
+
+  # The index of the current block.
+  let mut @current: Int
+
+  # The total number of reusable bytes.
+  #
+  # This value is incremented whenever a value is discarded or doesn't fit into
+  # a block.
+  let mut @reusable: Int
+
+  fn static new -> Self {
+    let block = Block.new
+
+    Self(current: 0, blocks: [block], reusable: 0)
+  }
+
+  fn mut allocate[R: mut + Read](
+    reader: mut R,
+    size: Int,
+  ) -> Result[Value, Error] {
+    # Large allocations don't go in blocks because:
+    #
+    # 1. They won't fit anyway
+    # 2. They'll likely stick around for a long time
+    # 3. They'll likely be rare, or at least a lot less common compared to small
+    #    allocations
+    if size > BLOCK_SIZE {
+      let buf = ByteArray.with_capacity(size)
+
+      try reader.read_exact(buf, size)
+      return Result.Ok(Value.Large(buf))
+    }
+
+    while @current < @blocks.size {
+      let blk = @blocks.get_mut(@current).get
+
+      match blk.allocate(reader, size) {
+        case Ok(v) -> return Result.Ok(v)
+        case NotEnoughSpace(v) -> @reusable = @reusable.wrapping_add(v)
+        case Error(e) -> throw e
+      }
+
+      @current = @current.wrapping_add(1)
+    }
+
+    # The allocation didn't fit into the current block. Instead of e.g. a
+    # first-fit or best-fit strategy, we just request a new block and allocate
+    # into that block. While this may lead to some fragmentation over time, it
+    # ensures we never have to perform linear scans over the entire heap, which
+    # can get very slow for large heaps.
+    let new = Block.new
+    let res = match new.allocate(reader, size) {
+      case Ok(v) -> Result.Ok(v)
+      case NotEnoughSpace(_) -> panic('failed to allocate into new block')
+      case Error(e) -> Result.Error(e)
+    }
+
+    @blocks.push(new)
+    res
+  }
+
+  fn defragment? -> Bool {
+    @reusable.to_float / BLOCK_SIZE.to_float * 100.0 >= FRAGMENTATION_THRESHOLD
+  }
+
+  fn mut defragment {
+    let fragmented = []
+
+    for block in @blocks := [] {
+      if block.defragment? {
+        block.reusable = 0
+        fragmented.push(block)
+      } else {
+        @blocks.push(block)
+      }
+    }
+
+    @current = 0
+
+    # TODO: use Map to determine live values
+    # TODO: reset size for blocks that have space available at the tail, such
+    #       that they can be reused
   }
 }
