@@ -1,4 +1,6 @@
+import kvi.map (Key, Map)
 import kvi.mem (Allocator, BLOCK_SIZE, Block)
+import std.hash.siphash (SipHasher13)
 import std.io (Buffer, Error, Read)
 import std.test (Tests)
 
@@ -8,6 +10,13 @@ impl Read for ErrorReader {
   fn pub mut read(into: mut ByteArray, size: Int) -> Result[Int, Error] {
     Result.Error(Error.ConnectionAborted)
   }
+}
+
+fn key(name: String) -> Key[ByteArray] {
+  let hasher = SipHasher13.new(0, 0)
+
+  name.hash(hasher)
+  Key(name: name.to_byte_array, hash: hasher.finish)
 }
 
 fn pub tests(t: mut Tests) {
@@ -122,6 +131,30 @@ fn pub tests(t: mut Tests) {
     t.equal(blk.bytes.capacity, BLOCK_SIZE)
   })
 
+  t.ok('Value.release', fn (t) {
+    let alloc = Allocator.new
+    let val1 = match alloc.allocate(Buffer.new('foo'), 3) {
+      case Ok(v) -> v
+      case _ -> throw 'Allocator.allocate failed'
+    }
+    let val2 = match alloc.allocate(Buffer.new('bar'), 3) {
+      case Ok(v) -> v
+      case _ -> throw 'Allocator.allocate failed'
+    }
+
+    val1.release(alloc)
+    t.equal(alloc.current.bytes.size, 6)
+    t.equal(alloc.current.reusable, 3)
+    t.equal(alloc.reusable, 3)
+
+    val2.release(alloc)
+    t.equal(alloc.current.bytes.size, 6)
+    t.equal(alloc.current.reusable, 6)
+    t.equal(alloc.reusable, 6)
+
+    Result.Ok(nil)
+  })
+
   t.ok('Allocator.allocate with a large value', fn (t) {
     let alloc = Allocator.new
     let buf = Buffer.new(ByteArray.filled(with: 1, times: BLOCK_SIZE * 2))
@@ -173,27 +206,173 @@ fn pub tests(t: mut Tests) {
     Result.Ok(nil)
   })
 
-  t.test('Allocator.allocate with a full block', fn (t) {
-    # TODO
+  t.ok('Allocator.allocate with a full block', fn (t) {
+    let alloc = Allocator.new
+    let buf1 = Buffer.new(ByteArray.filled(with: 1, times: BLOCK_SIZE))
+    let buf2 = Buffer.new('abc')
+    let _ = alloc.allocate(buf1, BLOCK_SIZE)
+    let res = match alloc.allocate(buf2, 3) {
+      case Ok(Small(_, v)) -> v
+      case _ -> throw 'Allocator.allocate failed'
+    }
+
+    t.equal(
+      alloc.blocks.get(0).get.bytes,
+      ByteArray.filled(with: 1, times: BLOCK_SIZE),
+    )
+    t.true(alloc.blocks.get(1).get.bytes.starts_with?('abc'))
+    t.equal(alloc.blocks.size, 2)
+    t.equal(res.size, 3)
+    t.equal(res.to_string, 'abc')
+    t.equal(alloc.reusable, 0)
+
+    Result.Ok(nil)
   })
 
-  t.test('Allocator.allocate with a fragmented block', fn (t) {
-    # TODO
+  t.ok('Allocator.allocate with a fragmented block', fn (t) {
+    let alloc = Allocator.new
+
+    alloc.current.fragmented
+
+    let buf = Buffer.new('abc')
+    let res = match alloc.allocate(buf, 3) {
+      case Ok(Small(_, v)) -> v
+      case _ -> throw 'Allocator.allocate failed'
+    }
+
+    t.equal(alloc.blocks.size, 2)
+    t.equal(res.to_string, 'abc')
+    t.equal(alloc.blocks.get(0).get.bytes.size, 0)
+    t.equal(alloc.reusable, 0)
+
+    Result.Ok(nil)
   })
 
-  t.test('Allocator.allocate with a block without enough space', fn (t) {
-    # TODO
+  t.ok('Allocator.allocate with a block without enough space', fn (t) {
+    let alloc = Allocator.new
+    let buf1 = Buffer.new(ByteArray.filled(with: 1, times: BLOCK_SIZE - 2))
+    let buf2 = Buffer.new('abc')
+    let _ = alloc.allocate(buf1, BLOCK_SIZE)
+    let res = match alloc.allocate(buf2, 3) {
+      case Ok(Small(_, v)) -> v
+      case _ -> throw 'Allocator.allocate failed'
+    }
+
+    t.equal(
+      alloc.blocks.get(0).get.bytes,
+      ByteArray.filled(with: 1, times: BLOCK_SIZE - 2),
+    )
+    t.true(alloc.blocks.get(1).get.bytes.starts_with?('abc'))
+    t.equal(alloc.blocks.size, 2)
+    t.equal(res.size, 3)
+    t.equal(res.to_string, 'abc')
+    t.equal(alloc.reusable, 2)
+    t.equal(alloc.blocks.get(0).get.reusable, 2)
+
+    Result.Ok(nil)
   })
 
   t.test('Allocator.add_reusable', fn (t) {
-    # TODO
+    let alloc = Allocator.new
+
+    alloc.add_reusable(10)
+    t.equal(alloc.reusable, 10)
   })
 
   t.test('Allocator.defragment?', fn (t) {
-    # TODO
+    let alloc = Allocator.new
+
+    t.false(alloc.defragment?)
+
+    alloc.add_reusable(BLOCK_SIZE / 2)
+    t.true(alloc.defragment?)
   })
 
-  t.test('Allocator.defragment', fn (t) {
-    # TODO
+  t.ok('Allocator.defragment', fn (t) {
+    let alloc = Allocator.new
+    let live = Map.new
+
+    match alloc.allocate(Buffer.new('foo'), 3) {
+      case Ok(v) -> live.set(key('key1'), v)
+      case _ -> throw 'Allocator.allocate failed'
+    }
+
+    match alloc.allocate(Buffer.new('bar'), 3) {
+      case Ok(v) -> live.set(key('key2'), v)
+      case _ -> throw 'Allocator.allocate failed'
+    }
+
+    match alloc.allocate(Buffer.new('baz'), 3) {
+      case Ok(_) -> {}
+      case _ -> throw 'Allocator.allocate failed'
+    }
+
+    match
+      alloc.allocate(
+        Buffer.new(ByteArray.filled(with: 1, times: BLOCK_SIZE * 2)),
+        BLOCK_SIZE * 2,
+      )
+    {
+      case Ok(v) -> live.set(key('large'), v)
+      case _ -> throw 'Allocator.allocate failed'
+    }
+
+    alloc.add_reusable(10)
+    alloc.current.fragmented
+    alloc.defragment(live)
+
+    t.equal(alloc.reusable, 0)
+    t.equal(alloc.blocks.size, 2)
+    t.equal(alloc.current_index, 0)
+    t.equal(alloc.current.bytes.size, 0)
+
+    let blk0 = alloc.blocks.get(0).get
+    let blk1 = alloc.blocks.get(1).get
+
+    t.equal(blk0.bytes.size, 0)
+    t.equal(blk0.reusable, 0)
+    t.equal(blk1.bytes.size, 6)
+    t.equal(blk1.reusable, 0)
+    t.true(blk1.bytes.starts_with?('barfoo'))
+
+    match live.get(key('key1')) {
+      case Some(Small(_, slice)) -> t.equal(slice, blk1.bytes.slice(3, 6))
+      case _ -> throw "key 'key1' is invalid"
+    }
+
+    match live.get(key('key2')) {
+      case Some(Small(_, slice)) -> t.equal(slice, blk1.bytes.slice(0, 3))
+      case _ -> throw "key 'key2' is invalid"
+    }
+
+    match live.get(key('large')) {
+      case Some(Large(bytes)) -> t.equal(bytes.size, BLOCK_SIZE * 2)
+      case _ -> throw "key 'large' is invalid"
+    }
+
+    Result.Ok(nil)
+  })
+
+  t.ok('Allocator.defragment with no live values', fn (t) {
+    let alloc = Allocator.new
+    let live = Map.new
+
+    match alloc.allocate(Buffer.new('foo'), 3) {
+      case Ok(_) -> {}
+      case _ -> throw 'Allocator.allocate failed'
+    }
+
+    match alloc.allocate(Buffer.new('bar'), 3) {
+      case Ok(_) -> {}
+      case _ -> throw 'Allocator.allocate failed'
+    }
+
+    alloc.current.fragmented
+    alloc.defragment(live)
+
+    t.equal(alloc.blocks.size, 1)
+    t.equal(alloc.blocks.get(0).get.bytes.size, 0)
+
+    Result.Ok(nil)
   })
 }

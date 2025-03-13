@@ -3,7 +3,7 @@ import std.bytes (Slice)
 import std.io (Buffer, Error, Read)
 
 # The size (in bytes) of each block.
-let BLOCK_SIZE = 1024 * 1024
+let BLOCK_SIZE = 2 * 1024 * 1024
 
 # The fragmentation percentage allowed before blocks need to be defragmented.
 let FRAGMENTATION_THRESHOLD = 0.2
@@ -122,29 +122,13 @@ type inline enum Value {
   # A value too large to store in a block and is instead allocated separately.
   case Large(ByteArray)
 
-  # Updates the block and allocator such that we may reuse the underlying memory
-  # at some point in the future.
-  #
-  # This isn't implemented using a destructor such that we can avoid storing an
-  # Allocator in a Block, which would cause a circular dependency between
-  # Allocator and Block and result in a clunky API.
+  # Updates the value's block and allocator to signal the value is no longer in
+  # use.
   fn mut release(allocator: mut Allocator) {
     match self {
       case Small(block, slice) -> {
-        # If the allocation is at the end of a block, we reduce the size such
-        # that it can be reused in the future, even if the block as a whole
-        # isn't fragmented enough to trigger defragmentation.
         let len = slice.size
 
-        if slice.end == block.bytes.size {
-          let new_size = block.bytes.size.wrapping_sub(len)
-
-          block.bytes.resize(new_size, value: 0)
-        }
-
-        # We always need to increment the amount of reusable bytes, otherwise we
-        # may not trigger defragmentation and thus not be able to reuse this
-        # block.
         block.add_reusable(len)
         allocator.add_reusable(len)
       }
@@ -156,6 +140,8 @@ type inline enum Value {
   }
 }
 
+# A bump allocator for small values, with a fallback for ad-hoc allocations of
+# large values.
 type Allocator {
   # All the blocks owned by this allocator.
   let mut @blocks: Array[Block]
@@ -261,11 +247,9 @@ type Allocator {
       if block.defragment? { block.fragmented }
     }
 
-    # Reset the allocation cursor to the start of the heap. This way we can
-    # potentially fill up existing blocks with data from fragmented blocks,
-    # instead of immediately allocating new blocks.
-    @current_index = 0
-    @current = @blocks.get_mut(0).get
+    # We reset the cursor here such that when moving data from fragmented blocks
+    # we'll try to fit them into existing blocks first.
+    reset_allocation_cursor
 
     # Iterating over all key/value pairs isn't ideal as it makes this update
     # process O(n) over the number of keys, instead of over the number of keys
@@ -295,5 +279,15 @@ type Allocator {
     for block in @blocks.iter_mut {
       if block.fragmented? { block.reset }
     }
+
+    # We reset the cursor again such that future allocations again try to first
+    # fit data into existing blocks before requesting new blocks.
+    reset_allocation_cursor
+    @reusable = 0
+  }
+
+  fn inline mut reset_allocation_cursor {
+    @current_index = 0
+    @current = @blocks.get_mut(0).get
   }
 }
