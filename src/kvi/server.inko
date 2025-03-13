@@ -1,5 +1,7 @@
 import kvi.config (Config)
 import kvi.logger (Logger)
+import kvi.map (Map)
+import kvi.mem (Allocator, Value)
 import kvi.proto.error (Error)
 import kvi.proto.generator (Generator)
 import kvi.proto.parser (Command, Parser)
@@ -10,11 +12,20 @@ import std.signal (Signal)
 type Server {
   let @config: Config
   let @logger: Logger
+  let @shards: Array[Shard]
 
   fn static new(config: Config) -> Self {
     let logger = Logger.new(config.log_level)
+    let shards = recover {
+      let len = config.shards.to_int
+      let shards = Array.with_capacity(len)
 
-    Server(config: config, logger: logger)
+      for _ in 0.until(len) { shards.push(Shard.new(recover logger.clone)) }
+
+      shards
+    }
+
+    Server(config: config, logger: logger, shards: shards)
   }
 
   # TODO: use logging for errors
@@ -259,5 +270,46 @@ type Pipeline {
 
   fn mut skip_remaining -> Result[Nil, Error] {
     @parser.skip_bulk_strings(@remaining := 0)
+  }
+}
+
+type async Shard {
+  let @allocator: Allocator
+  let @keys: Map[ByteArray, Value]
+  let @logger: Logger
+
+  fn static new(logger: uni Logger) -> Self {
+    Shard(
+      allocator: recover Allocator.new,
+      keys: recover Map.new,
+      logger: logger,
+    )
+  }
+
+  fn async mut set(
+    connection: Connection,
+    socket: uni TcpClient,
+    key: uni ByteArray,
+  ) {
+    let socket = recover {
+      let socket = recover socket
+
+      # TODO: read the size, skip the \r\n, then read the data into the
+      # allocator
+
+      socket
+    }
+
+    # TODO: implement
+    connection.run(socket)
+  }
+
+  fn async mut get(
+    connection: Connection,
+    socket: uni TcpClient,
+    key: uni ByteArray,
+  ) {
+    # TODO: implement
+    connection.run(socket)
   }
 }

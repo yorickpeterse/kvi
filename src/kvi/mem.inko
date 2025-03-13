@@ -3,7 +3,7 @@ import std.bytes (Slice)
 import std.io (Buffer, Error, Read)
 
 # The size (in bytes) of each block.
-let BLOCK_SIZE = 2 * 1024 * 1024
+let BLOCK_SIZE = 4 * 1024 * 1024
 
 # The fragmentation percentage allowed before blocks need to be defragmented.
 let FRAGMENTATION_THRESHOLD = 0.2
@@ -32,6 +32,9 @@ type inline enum Allocation {
 # A Block is just a wrapper around a ByteArray. We don't use mmap as it's not a
 # good fit for databases ([Are You Sure You Want to Use MMAP in Your Database
 # Management System?](https://www.cidrdb.org/cidr2022/papers/p13-crotty.pdf)).
+# At least on Linux the use of malloc()/realloc() doesn't result in memory being
+# actually committed until it is used, such that it's OK to reserve larger
+# chunks of memory even if they're never used.
 type Block {
   # The memory stored in the block.
   let @bytes: ByteArray
