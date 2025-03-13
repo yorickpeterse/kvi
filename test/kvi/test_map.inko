@@ -136,8 +136,8 @@ fn pub tests(t: mut Tests) {
 
     t.equal(map.size, 3)
 
-    t.true(map.remove(key_with_hash('a', 1)))
-    t.false(map.remove(key_with_hash('a', 1)))
+    t.equal(map.remove(key_with_hash('a', 1)), Option.Some(1))
+    t.equal(map.remove(key_with_hash('a', 1)), Option.None)
     t.equal(map.size, 2)
 
     let b = map.entries.get(1).get.as_ref.get

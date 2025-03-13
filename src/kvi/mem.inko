@@ -1,15 +1,29 @@
+import kvi.map (Map)
 import std.bytes (Slice)
-import std.io (Error, Read)
+import std.io (Buffer, Error, Read)
 
-# The amount of bytes to reserve for each block.
+# The size (in bytes) of each block.
 let BLOCK_SIZE = 1024 * 1024
 
 # The fragmentation percentage allowed before blocks need to be defragmented.
 let FRAGMENTATION_THRESHOLD = 0.2
 
 type inline enum Allocation {
+  # The allocation succeeded.
   case Ok(Value)
+
+  # The block is fragmented and can't be allocated into.
+  case Fragmented
+
+  # The block is full.
+  case Full
+
+  # The block isn't full but doesn't have enough space for an allocation.
+  #
+  # The `Int` argument is the number of remaining bytes in the block.
   case NotEnoughSpace(Int)
+
+  # The allocationd failed due to an IO error.
   case Error(Error)
 }
 
@@ -19,65 +33,146 @@ type inline enum Allocation {
 # good fit for databases ([Are You Sure You Want to Use MMAP in Your Database
 # Management System?](https://www.cidrdb.org/cidr2022/papers/p13-crotty.pdf)).
 type Block {
+  # The memory stored in the block.
   let @bytes: ByteArray
 
   # The amount of reusable bytes in this block.
   #
   # This amount is incremented whenever an allocation doesn't fit or when a
   # value is discarded.
+  #
+  # A value of -1 means the block is fragmented.
   let mut @reusable: Int
 
   fn static new -> Self {
     Self(bytes: ByteArray.with_capacity(BLOCK_SIZE), reusable: 0)
   }
 
+  # Allocates a value from a `Read` value into `self`.
+  #
+  # This method assumes that `size` fits in a block. If this isn't the case
+  # additional space is allocated, though in reality this never happens due to
+  # how this method is called.
+  #
+  # We use a `Read` value as the input such that we can read the data straight
+  # from a socket, removing the need for intermediate buffers.
   fn mut allocate[R: mut + Read](reader: mut R, size: Int) -> Allocation {
-    let rem = remaining
+    # We don't want to allocate into fragmented blocks because we want to move
+    # data _out_ of those blocks.
+    if fragmented? { return Allocation.Fragmented }
 
-    if size > rem {
-      @reusable = @reusable.wrapping_add(rem)
-      return Allocation.NotEnoughSpace(rem)
+    # If the block is full or simply doesn't have enough free space at the end,
+    # we must bail out and try another block. While we could increase the
+    # capacity of the underlying ByteArray, the whole point of this dance is to
+    # avoid dynamic memory allocations as much as possible.
+    match remaining {
+      case 0 -> return Allocation.Full
+      case n if size > n -> {
+        add_reusable(n)
+        return Allocation.NotEnoughSpace(n)
+      }
+      case _ -> {}
     }
 
     let start = @bytes.size
 
     match reader.read_exact(@bytes, size) {
-      case Ok(_) -> Allocation.Ok(Value.Small(@bytes.slice(start, @bytes.size)))
+      case Ok(_) -> {
+        Allocation.Ok(Value.Small(self, @bytes.slice(start, @bytes.size)))
+      }
       case Error(e) -> Allocation.Error(e)
     }
   }
 
-  fn remaining -> Int {
+  fn inline mut add_reusable(amount: Int) {
+    @reusable = @reusable.wrapping_add(amount)
+  }
+
+  fn inline remaining -> Int {
     @bytes.capacity.wrapping_sub(@bytes.size)
   }
 
-  fn defragment? -> Bool {
+  fn inline defragment? -> Bool {
     @reusable.to_float / BLOCK_SIZE.to_float * 100.0 >= FRAGMENTATION_THRESHOLD
+  }
+
+  fn inline mut fragmented {
+    @reusable = -1
+  }
+
+  fn inline fragmented? -> Bool {
+    @reusable == -1
+  }
+
+  fn inline mut reset {
+    @reusable = 0
+    @bytes.clear
   }
 }
 
 type inline enum Value {
-  case Small(Slice[ByteArray])
+  # A value small enough to fit into a block.
+  #
+  # The arguments are:
+  #
+  # 1. The block the value is allocated into.
+  # 2. The slice of bytes of the allocated value.
+  case Small(mut Block, Slice[ByteArray])
+
+  # A value too large to store in a block and is instead allocated separately.
   case Large(ByteArray)
+
+  # Updates the block and allocator such that we may reuse the underlying memory
+  # at some point in the future.
+  #
+  # This isn't implemented using a destructor such that we can avoid storing an
+  # Allocator in a Block, which would cause a circular dependency between
+  # Allocator and Block and result in a clunky API.
+  fn mut release(allocator: mut Allocator) {
+    match self {
+      case Small(block, slice) -> {
+        # If the allocation is at the end of a block, we reduce the size such
+        # that it can be reused in the future, even if the block as a whole
+        # isn't fragmented enough to trigger defragmentation.
+        let len = slice.size
+
+        if slice.end == block.bytes.size {
+          let new_size = block.bytes.size.wrapping_sub(len)
+
+          block.bytes.resize(new_size, value: 0)
+        }
+
+        # We always need to increment the amount of reusable bytes, otherwise we
+        # may not trigger defragmentation and thus not be able to reuse this
+        # block.
+        block.add_reusable(len)
+        allocator.add_reusable(len)
+      }
+      case _ -> {
+        # Large values don't have an impact on the allocator, so there's nothing
+        # left to do.
+      }
+    }
+  }
 }
 
 type Allocator {
   # All the blocks owned by this allocator.
   let mut @blocks: Array[Block]
 
+  # The block to allocate into.
+  let mut @current: mut Block
+
   # The index of the current block.
-  let mut @current: Int
+  let mut @current_index: Int
 
   # The total number of reusable bytes.
-  #
-  # This value is incremented whenever a value is discarded or doesn't fit into
-  # a block.
   let mut @reusable: Int
 
   fn static new -> Self {
     let block = Block.new
 
-    Self(current: 0, blocks: [block], reusable: 0)
+    Self(current: mut block, current_index: 0, blocks: [block], reusable: 0)
   }
 
   fn mut allocate[R: mut + Read](
@@ -91,22 +186,39 @@ type Allocator {
     # 3. They'll likely be rare, or at least a lot less common compared to small
     #    allocations
     if size > BLOCK_SIZE {
-      let buf = ByteArray.with_capacity(size)
-
-      try reader.read_exact(buf, size)
-      return Result.Ok(Value.Large(buf))
+      allocate_large(reader, size)
+    } else {
+      allocate_small(reader, size)
     }
+  }
 
-    while @current < @blocks.size {
-      let blk = @blocks.get_mut(@current).get
-
-      match blk.allocate(reader, size) {
+  fn mut allocate_small[R: mut + Read](
+    reader: mut R,
+    size: Int,
+  ) -> Result[Value, Error] {
+    loop {
+      match @current.allocate(reader, size) {
         case Ok(v) -> return Result.Ok(v)
-        case NotEnoughSpace(v) -> @reusable = @reusable.wrapping_add(v)
+        case Fragmented or Full -> {
+          # Skip the block and try the next one instead.
+        }
+        case NotEnoughSpace(v) -> {
+          # It's possible that the tail of the block was previously in use and
+          # is now free, in which case we end up incrementing the amount of
+          # reusable bytes twice. This is fine though, because in the worst case
+          # this triggers defragmentation earlier.
+          add_reusable(v)
+        }
         case Error(e) -> throw e
       }
 
-      @current = @current.wrapping_add(1)
+      @current_index = @current_index.wrapping_add(1)
+
+      if @current_index < @blocks.size {
+        @current = @blocks.get_mut(@current_index).get
+      } else {
+        break
+      }
     }
 
     # The allocation didn't fit into the current block. Instead of e.g. a
@@ -117,34 +229,71 @@ type Allocator {
     let new = Block.new
     let res = match new.allocate(reader, size) {
       case Ok(v) -> Result.Ok(v)
-      case NotEnoughSpace(_) -> panic('failed to allocate into new block')
       case Error(e) -> Result.Error(e)
+      case _ -> panic('failed to allocate into new block')
     }
 
+    @current = mut new
     @blocks.push(new)
     res
+  }
+
+  fn mut allocate_large[R: mut + Read](
+    reader: mut R,
+    size: Int,
+  ) -> Result[Value, Error] {
+    let buf = ByteArray.with_capacity(size)
+
+    try reader.read_exact(buf, size)
+    Result.Ok(Value.Large(buf))
+  }
+
+  fn mut add_reusable(amount: Int) {
+    @reusable = @reusable.wrapping_add(amount)
   }
 
   fn defragment? -> Bool {
     @reusable.to_float / BLOCK_SIZE.to_float * 100.0 >= FRAGMENTATION_THRESHOLD
   }
 
-  fn mut defragment {
-    let fragmented = []
-
-    for block in @blocks := [] {
-      if block.defragment? {
-        block.reusable = 0
-        fragmented.push(block)
-      } else {
-        @blocks.push(block)
-      }
+  fn mut defragment(live: mut Map[ByteArray, Value]) {
+    for block in @blocks.iter_mut {
+      if block.defragment? { block.fragmented }
     }
 
-    @current = 0
+    # Reset the allocation cursor to the start of the heap. This way we can
+    # potentially fill up existing blocks with data from fragmented blocks,
+    # instead of immediately allocating new blocks.
+    @current_index = 0
+    @current = @blocks.get_mut(0).get
 
-    # TODO: use Map to determine live values
-    # TODO: reset size for blocks that have space available at the tail, such
-    #       that they can be reused
+    # Iterating over all key/value pairs isn't ideal as it makes this update
+    # process O(n) over the number of keys, instead of over the number of keys
+    # that actually need updating. An alternative would be to track the values
+    # per block such that we can do something like this:
+    #
+    #     for block in fragmented
+    #       for value in block
+    #         copy value to new block
+    #
+    # The problem with such an approach is that it requires additional
+    # allocations and more indirection to track those values, likely resulting
+    # in reduced allocator performance, and possibly nullifying the benefits of
+    # using a custom allocator entirely.
+    live.update_values(fn (val) {
+      match val {
+        case Small(block, slice) if block.fragmented? -> {
+          # Since we're copying from an in-memory buffer _and_ the value is
+          # guaranteed to always fit in a block, the panic here won't get
+          # triggered.
+          Option.Some(allocate_small(Buffer.new(slice), slice.size).or_panic)
+        }
+        case _ -> Option.None
+      }
+    })
+
+    for block in @blocks.iter_mut {
+      if block.fragmented? { block.reset }
+    }
   }
 }

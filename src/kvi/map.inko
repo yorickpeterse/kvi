@@ -1,5 +1,6 @@
 # An optimized hash map.
 import std.cmp (Equal)
+import std.iter (Stream)
 
 # The load factor percentage in the (inclusive) range 1 to 10.
 let LOAD_FACTOR = 9
@@ -30,6 +31,10 @@ type inline Entry[K: Equal, V] {
   let @key: Key[K]
   let @value: V
   let @distance: Int
+
+  fn inline move with_value(value: V) -> Self {
+    Entry(key: @key, value: value, distance: @distance)
+  }
 
   fn inline move with_distance(distance: Int) -> Self {
     Entry(key: @key, value: @value, distance: distance)
@@ -88,15 +93,17 @@ type Map[K: Equal, V] {
     insert(Entry(key: key, value: value, distance: 0))
   }
 
-  # Removes the key from `self`, returning `true` if it was present prior to
-  # removal.
-  fn mut remove(key: ref Key[K]) -> Bool {
+  # Removes the key from `self`, returning the value.
+  #
+  # If the key wasn't assigned a value, an `Option.None` is returned.
+  fn mut remove(key: ref Key[K]) -> Option[V] {
     let idx = match index_for(key) {
       case Some(v) -> v
-      case _ -> return false
+      case _ -> return Option.None
     }
 
-    @entries.set(idx, Option.None)
+    let entry = @entries.swap(idx, Option.None)
+
     @size = @size.wrapping_sub(1)
 
     # Now we need to backwards shift entries that come _after_ the one we just
@@ -120,7 +127,48 @@ type Map[K: Equal, V] {
       idx = desired_index_for(idx.wrapping_add(1))
     }
 
-    true
+    match entry {
+      case Some({ @value = val }) -> Option.Some(val)
+      case _ -> panic('unreachable')
+    }
+  }
+
+  # Returns an iterator over the key-value pairs in `self`.
+  fn pairs -> Stream[(ref Key[K], ref V)] {
+    let mut idx = 0
+
+    Stream.new(fn move {
+      loop {
+        match @entries.get(idx := idx.wrapping_add(1)) {
+          case Ok(Some(e)) -> return Option.Some((e.key, e.value))
+          case Ok(_) -> {}
+          case _ -> return Option.None
+        }
+      }
+    })
+  }
+
+  # Calls `fun` for each entry, replacing its value with a new one.
+  #
+  # If `fun` returns an `Option.Some`, the entry's value is overwritten,
+  # otherwise it's left as-is.
+  fn mut update_values(fun: fn (ref V) -> Option[V]) {
+    for (idx, entry) in @entries.iter.with_index {
+      let val = match entry {
+        case Some(v) -> {
+          match fun.call(v.value) {
+            case Some(v) -> v
+            case _ -> next
+          }
+        }
+        case _ -> next
+      }
+
+      # The old value is guaranteed to be a Some at this point.
+      let old = @entries.swap(idx, Option.None).get
+
+      @entries.swap(idx, Option.Some(old.with_value(val)))
+    }
   }
 
   fn mut resize {
