@@ -2,9 +2,7 @@ import kvi.config (Config)
 import kvi.logger (Logger)
 import kvi.map (Map)
 import kvi.mem (Allocator, Value)
-import kvi.proto.error (Error)
-import kvi.proto.generator (Generator)
-import kvi.proto.parser (Command, Parser)
+import kvi.resp (Error, Generator, Stream)
 import kvi.signal (Signals)
 import std.net.socket (TcpClient, TcpServer)
 import std.signal (Signal)
@@ -108,8 +106,8 @@ type async Accepter {
 
   fn async mut run {
     loop {
-      let sock = recover {
-        match @socket.accept {
+      let ses = recover {
+        let sock = match @socket.accept {
           case Ok(v) -> v
           # We may encounter this error if the server is being shut down in
           # response to e.g. a SIGINT signal.
@@ -119,158 +117,121 @@ type async Accepter {
             next
           }
         }
+
+        Stream.new(sock)
       }
 
-      Connection.new(recover @logger.clone).run(sock)
+      Connection.new(recover @logger.clone).run(ses)
     }
   }
 }
 
 type async Connection {
   let @logger: Logger
-  let @buffer: ByteArray
 
   fn static new(logger: uni Logger) -> Connection {
-    Connection(logger: logger, buffer: recover ByteArray.new)
+    Connection(logger: logger)
   }
 
-  fn async mut run(socket: uni TcpClient) {
-    let socket = recover {
-      let socket = recover socket
-
-      # TODO: a pipeline may include multiple commands, each needing to act on a
-      # different shard. How do we handle that?
-      #
-      # Treat this as a message, which in turn consists of N commands. A
-      # dedicated Message type is used to track the number of remaining
-      # commands. We need to store the pending message somewhere so we can
-      # resume it.
-      match run_pipeline(socket) {
-        case Ok(_) -> {
-          # TODO: act upon request
-        }
-        case Error(Closed) -> {
-          @logger.debug('client disconnected')
-          return
-        }
-        case Error(Read(e)) -> {
-          @logger.debug('disconnecting due to IO error: ${e}')
-          return
-        }
-        case Error(e) -> {
-          let _ = socket.write('-ERR ${e}\r\n')
-          let _ = socket.shutdown
-
-          @logger.debug(e.to_string)
-          return
-        }
+  fn async mut run(stream: uni Stream[TcpClient]) {
+    # TODO: a pipeline may include multiple commands, each needing to act on a
+    # different shard. How do we handle that?
+    #
+    # Treat this as a message, which in turn consists of N commands. A
+    # dedicated Message type is used to track the number of remaining
+    # commands. We need to store the pending message somewhere so we can
+    # resume it.
+    match resume(stream) {
+      case Ok(stream) -> run(stream)
+      case Error((_, Closed)) -> {
+        @logger.debug('client disconnected')
+        return
       }
-
-      socket
-    }
-
-    run(socket)
-  }
-
-  fn mut run_pipeline(socket: mut TcpClient) -> Result[Nil, Error] {
-    let pipe = try Pipeline.new(socket, @buffer)
-
-    loop {
-      let cmd = match pipe.next_command {
-        case Some(Ok(v)) -> v
-        case None -> break
-        case Some(Error(InvalidCommand(n))) -> {
-          @logger.debug("rejecting invalid command '${n}'")
-
-          let _ = socket.write('-ERR the command is invalid\r\n')
-
-          # If a command is invalid/unsupported it may be followed by a sub
-          # command and/or arguments. We need to skip those.
-          try pipe.skip_remaining
-          break
-        }
-        case Some(Error(e)) -> throw e
+      case Error((_, Read(e))) -> {
+        @logger.debug('disconnecting due to IO error: ${e}')
+        return
       }
+      case Error((stream, e)) -> {
+        let _ = stream.stream.write('-ERR ${e}\r\n')
 
-      match cmd {
-        case Hello -> {
-          match try pipe.string_argument {
-            case '3' -> {
-              # TODO: clean this up, this is ugly
-              # TODO: include actual version number
-              let gen = Generator.new
-
-              gen.map(3)
-              gen.bulk_string('server')
-              gen.bulk_string('kvi')
-              gen.bulk_string('version')
-              gen.bulk_string('TODO')
-              gen.bulk_string('proto')
-              gen.int(3)
-
-              let _ = socket.write(gen.into_string)
-            }
-            case n -> {
-              @logger.debug('rejected unsupported protocol version ${n}')
-              throw Error.InvalidVersion
-            }
-          }
-        }
-        case Get -> {
-          let key = try pipe.string_argument
-
-          # TODO: implement
-          @logger.debug('GET ${key}')
-
-          let _ = socket.write('$-1\r\n')
-        }
-        case Set -> {
-          # TODO
-        }
-        case Delete -> {
-          # TODO
-        }
-        case Keys -> {
-          # TODO
-        }
+        @logger.debug(e.to_string)
+        return
       }
     }
 
-    Result.Ok(nil)
-  }
-}
-
-type Pipeline {
-  let mut @remaining: Int
-  let @parser: Parser[mut TcpClient]
-
-  fn static new(
-    socket: mut TcpClient,
-    buffer: mut ByteArray,
-  ) -> Result[Pipeline, Error] {
-    let parser = Parser.new(socket, buffer)
-    let rem = try parser.array
-
-    Result.Ok(Pipeline(remaining: rem, parser: parser))
+    # run(session)
   }
 
-  fn mut next_command -> Option[Result[Command, Error]] {
-    if @remaining > 0 {
-      @remaining -= 1
-      Option.Some(@parser.command)
-    } else {
-      Option.None
-    }
+  fn mut resume(
+    stream: uni Stream[TcpClient],
+  ) -> Result[uni Stream[TcpClient], (uni Stream[TcpClient], Error)] {
+    Result.Ok(stream)
   }
 
-  fn mut string_argument -> Result[String, Error] {
-    @remaining -= 1
-    @parser.string_literal
-  }
-
-  fn mut skip_remaining -> Result[Nil, Error] {
-    @parser.skip_bulk_strings(@remaining := 0)
-  }
+  # fn mut run_pipeline(session: uni Session) -> Result[Nil, Error] {
+  # loop {
+  #   let cmd = match session.next_command {
+  #     case Some(Ok(v)) -> v
+  #     case None -> break
+  #     case Some(Error(InvalidCommand(n))) -> {
+  #       @logger.debug("rejecting invalid command '${n}'")
+  #
+  #       let _ = socket.write('-ERR the command is invalid\r\n')
+  #
+  #       # If a command is invalid/unsupported it may be followed by a sub
+  #       # command and/or arguments. We need to skip those.
+  #       try pipe.skip_remaining
+  #       break
+  #     }
+  #     case Some(Error(e)) -> throw e
+  #   }
+  #
+  #   match cmd {
+  #     case Hello -> {
+  #       match try pipe.string_argument {
+  #         case '3' -> {
+  #           # TODO: clean this up, this is ugly
+  #           # TODO: include actual version number
+  #           let gen = Generator.new
+  #
+  #           gen.map(3)
+  #           gen.bulk_string('server')
+  #           gen.bulk_string('kvi')
+  #           gen.bulk_string('version')
+  #           gen.bulk_string('TODO')
+  #           gen.bulk_string('proto')
+  #           gen.int(3)
+  #
+  #           let _ = socket.write(gen.into_string)
+  #         }
+  #         case n -> {
+  #           @logger.debug('rejected unsupported protocol version ${n}')
+  #           throw Error.InvalidVersion
+  #         }
+  #       }
+  #     }
+  #     case Get -> {
+  #       let key = try pipe.string_argument
+  #
+  #       # TODO: implement
+  #       @logger.debug('GET ${key}')
+  #
+  #       let _ = socket.write('$-1\r\n')
+  #     }
+  #     case Set -> {
+  #       # TODO
+  #     }
+  #     case Delete -> {
+  #       # TODO
+  #     }
+  #     case Keys -> {
+  #       # TODO
+  #     }
+  #   }
+  # }
+  #
+  #   Result.Ok(nil)
+  # }
 }
 
 type async Shard {
@@ -301,7 +262,7 @@ type async Shard {
     }
 
     # TODO: implement
-    connection.run(socket)
+    # connection.run(socket)
   }
 
   fn async mut get(
@@ -310,6 +271,6 @@ type async Shard {
     key: uni ByteArray,
   ) {
     # TODO: implement
-    connection.run(socket)
+    # connection.run(socket)
   }
 }

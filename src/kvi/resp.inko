@@ -1,7 +1,9 @@
-import kvi.proto.error (Error)
 import std.cmp (Equal)
 import std.fmt (Format, Formatter)
-import std.io (Read)
+import std.io (Read, Write)
+import std.io (Error as IoError)
+import std.string (StringBuffer)
+import std.string (ToString)
 
 let ADD = 43
 let AST = 42
@@ -17,6 +19,7 @@ let UPPER_H = 72
 let UPPER_K = 75
 let UPPER_S = 83
 let ZERO = 48
+let TERM = '\r\n'
 
 fn inline parse_digit(current: Int, byte: Int) -> Int {
   current.wrapping_mul(10).wrapping_add(byte - ZERO)
@@ -24,6 +27,95 @@ fn inline parse_digit(current: Int, byte: Int) -> Int {
 
 fn inline digit?(byte: Int) -> Bool {
   byte >= ZERO and byte <= NINE
+}
+
+type inline Generator {
+  let @buffer: StringBuffer
+
+  fn static new -> Self {
+    Generator(StringBuffer.new)
+  }
+
+  fn mut map(size: Int) {
+    @buffer.push('%${size}${TERM}')
+  }
+
+  fn mut bulk_string(string: String) {
+    @buffer.push('$${string.size}${TERM}')
+    @buffer.push(string)
+    @buffer.push(TERM)
+  }
+
+  fn mut int(value: Int) {
+    @buffer.push(':${value}${TERM}')
+  }
+
+  fn move into_string -> String {
+    @buffer.into_string
+  }
+}
+
+# An error produced when processing RESP3 messages.
+#
+# This includes both syntax errors and logical errors, such as the use of an
+# unsupported command or protocol version.
+type inline enum Error {
+  # The syntax is invalid (i.e. we ran into an unexpected byte).
+  case InvalidSyntax
+
+  # The protocol version is invalid.
+  case InvalidVersion
+
+  # A command name is invalid or unsupported.
+  case InvalidCommand(String)
+
+  # The input stream was closed by the client.
+  #
+  # We include this here so it's a bit easier for consumers of the parser to
+  # handle the different reasons a stream might be closed.
+  case Closed
+
+  # A generic IO error occurred when reading from the input stream.
+  case Read(IoError)
+}
+
+impl ToString for Error {
+  fn pub to_string -> String {
+    match self {
+      case InvalidSyntax -> 'the syntax is invalid'
+      case InvalidVersion -> 'the protocol version is unsupported'
+      case InvalidCommand(v) -> "the command '${v}' is unsupported"
+      case Closed -> 'the input stream is closed'
+      case Read(e) -> e.to_string
+    }
+  }
+}
+
+impl Equal for Error {
+  fn pub ==(other: ref Error) -> Bool {
+    match (self, other) {
+      case (InvalidSyntax, InvalidSyntax) -> true
+      case (InvalidVersion, InvalidVersion) -> true
+      case (InvalidCommand(a), InvalidCommand(b)) -> a == b
+      case (Closed, Closed) -> true
+      case (Read(a), Read(b)) -> a == b
+      case _ -> false
+    }
+  }
+}
+
+impl Format for Error {
+  fn pub fmt(formatter: mut Formatter) {
+    match self {
+      case InvalidSyntax -> formatter.tuple('InvalidSyntax').finish
+      case InvalidVersion -> formatter.tuple('InvalidVersion').finish
+      case InvalidCommand(a) -> {
+        formatter.tuple('InvalidCommand').field(a).finish
+      }
+      case Closed -> formatter.tuple('Closed').finish
+      case Read(v) -> formatter.tuple('Read').field(v).finish
+    }
+  }
 }
 
 type copy enum Event {
@@ -129,14 +221,52 @@ impl Format for Command {
   }
 }
 
-type inline Parser[T: mut + Read] {
+# A type for parsing and generating RESP messages.
+type Stream[T: mut + Read + Write] {
+  # The underlying IO stream, typically a socket.
   let @stream: T
-  let @buffer: mut ByteArray
 
-  fn static new(stream: T, buffer: mut ByteArray) -> Parser[T] {
-    Parser(stream: stream, buffer: buffer)
+  # An intermediate buffer for parsing data.
+  let @buffer: ByteArray
+
+  # The number of remaining values in a pipeline to process.
+  let mut @remaining: Int
+
+  fn static new(stream: T) -> Self {
+    Self(stream: stream, buffer: ByteArray.new, remaining: 0)
   }
 
+  # Parses the start of a new command pipeline.
+  fn mut start_pipeline -> Result[Nil, Error] {
+    @remaining = try array
+    Result.Ok(nil)
+  }
+
+  # Parses the next command to run as part of a pipeline.
+  fn mut next_pipeline_command -> Result[Option[Command], Error] {
+    if @remaining > 0 {
+      @remaining = @remaining.wrapping_sub(1)
+      Result.Ok(Option.Some(try command))
+    } else {
+      Result.Ok(Option.None)
+    }
+  }
+
+  # Parses the next value as a bulk string argument in a pipeline.
+  fn mut string_argument -> Result[String, Error] {
+    @remaining = @remaining.wrapping_sub(1)
+    string_literal
+  }
+
+  # Skips all remaining commands/arguments in the pipeline.
+  fn mut skip_pipeline_remainder -> Result[Nil, Error] {
+    skip_bulk_strings(@remaining := 0)
+  }
+
+  # Parses the next command from the stream.
+  #
+  # This method returns an `Error` error if the input is an invalid or
+  # unsupported command.
   fn mut command -> Result[Command, Error] {
     try read(try bulk_string)
     try read_terminator
@@ -150,23 +280,21 @@ type inline Parser[T: mut + Read] {
     }
   }
 
+  # Parses a bulk string into a `String` value.
   fn mut string_literal -> Result[String, Error] {
     try read(try bulk_string)
     try read_terminator
     Result.Ok(@buffer.drain_to_string)
   }
 
+  # Parses and skips `amount` bulk strings.
   fn mut skip_bulk_strings(amount: Int) -> Result[Nil, Error] {
-    let mut i = 0
-
-    while i < amount {
-      try skip_bulk_string
-      i += 1
-    }
+    for _ in 0.until(amount) { try skip_bulk_string }
 
     Result.Ok(nil)
   }
 
+  # Parses and skips a single bulk string.
   fn mut skip_bulk_string -> Result[Nil, Error] {
     try read(try bulk_string)
     @buffer.clear
@@ -174,6 +302,7 @@ type inline Parser[T: mut + Read] {
     Result.Ok(nil)
   }
 
+  # Parses the start of an array and returns its size.
   fn mut array -> Result[Int, Error] {
     match parse {
       case Ok(Array(n)) -> Result.Ok(n)
@@ -182,6 +311,7 @@ type inline Parser[T: mut + Read] {
     }
   }
 
+  # Parses the start of a bulk string and returns its size (in bytes).
   fn mut bulk_string -> Result[Int, Error] {
     match parse {
       case Ok(BulkString(n)) -> Result.Ok(n)
@@ -190,6 +320,7 @@ type inline Parser[T: mut + Read] {
     }
   }
 
+  # Parses a single value into an `Event`.
   fn mut parse -> Result[Event, Error] {
     match try read_byte {
       case AST -> Result.Ok(Event.Array(try size))
@@ -199,10 +330,12 @@ type inline Parser[T: mut + Read] {
     }
   }
 
+  # Parses the size of a value (e.g. the size of a bulk string).
   fn mut size -> Result[Int, Error] {
     digits(-1)
   }
 
+  # Parses a signed integer and returns its value as an `Int`.
   fn mut integer -> Result[Int, Error] {
     match read_byte {
       case Ok(ADD) -> size
@@ -212,6 +345,10 @@ type inline Parser[T: mut + Read] {
     }
   }
 
+  # Parses a sequence of digits into an `Int`.
+  #
+  # The `initial` argument is the first digit, or `-1` to signal the lack of an
+  # existing (= pre-parsed) initial digit.
   fn mut digits(initial: Int) -> Result[Int, Error] {
     let mut val = 0
 
