@@ -12,7 +12,11 @@ use it for benchmarking and testing new Inko features.
 
 ## Installation
 
-TODO
+Clone the repository, then run `inko build` to generate a debug build located at
+`./build/debug/main`, or `inko build --release` to generate a release build
+located at `./build/release/main`.
+
+To run the tests, run `inko test` in the root directory of this project.
 
 ## License
 
