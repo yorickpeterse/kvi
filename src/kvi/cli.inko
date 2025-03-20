@@ -1,10 +1,9 @@
+import kvi (VERSION)
 import kvi.config (Config)
-import kvi.server (Server)
+import kvi.server (start)
 import std.fs.path (Path)
 import std.io (Write)
 import std.optparse (Help, Options)
-
-let VERSION = '0.1.0'
 
 fn show_help[W: mut + Write](options: ref Options, output: mut W) {
   let help = Help
@@ -34,12 +33,6 @@ fn pub run[W: mut + Write](
     'accepters',
     'INT',
     'The number of processes to use for accepting new connections',
-  )
-  opts.single(
-    'f',
-    'fragmentation',
-    'INT',
-    'The fragmentation percentage before defragmentation is needed',
   )
   opts.single('l', 'log', 'LEVEL', 'The logging level to enable')
 
@@ -78,15 +71,10 @@ fn pub run[W: mut + Write](
     case _ -> {}
   }
 
-  match matches.value('fragmentation') {
-    case Some(v) -> try conf.parse_fragmentation(v)
-    case _ -> {}
-  }
-
   match matches.value('log') {
     case Some(v) -> try conf.parse_log_level(v)
     case _ -> {}
   }
 
-  Server.new(conf).start
+  start(conf)
 }

@@ -1,0 +1,198 @@
+import kvi.logger (Level, Logger)
+import kvi.map (Hasher)
+import kvi.server (Accepter, Shards)
+import std.io (Error as IoError)
+import std.net.ip (IpAddress)
+import std.net.socket (TcpClient, TcpServer)
+import std.test (Tests)
+
+fn setup -> Result[TcpClient, IoError] {
+  let logger = recover Logger.new(Level.None)
+  let server = recover try TcpServer.new(IpAddress.v4(0, 0, 0, 0), port: 0)
+  let addr = try server.local_address
+  let shards = recover Shards.new(2)
+  let hasher = Hasher.new
+
+  Accepter.new(logger, server, shards, hasher).run
+  TcpClient.new([addr.ip], addr.port)
+}
+
+fn read(socket: mut TcpClient) -> Result[String, IoError] {
+  let buf = ByteArray.new
+
+  try socket.shutdown_write
+  try socket.read_all(buf)
+  Result.Ok(buf.to_string)
+}
+
+fn set(
+  socket: mut TcpClient,
+  key: String,
+  value: String,
+) -> Result[Nil, IoError] {
+  socket.write(
+    '*3\r\n$3\r\nSET\r\n$${key.size}\r\n${key}\r\n$${value.size}\r\n${value}\r\n',
+  )
+}
+
+fn get(socket: mut TcpClient, key: String) -> Result[Nil, IoError] {
+  socket.write('*2\r\n$3\r\nGET\r\n$${key.size}\r\n${key}\r\n')
+}
+
+fn del(socket: mut TcpClient, key: String) -> Result[Nil, IoError] {
+  socket.write('*2\r\n$3\r\nDEL\r\n$${key.size}\r\n${key}\r\n')
+}
+
+fn keys(socket: mut TcpClient) -> Result[Nil, IoError] {
+  socket.write('*1\r\n$4\r\nKEYS\r\n')
+}
+
+fn pub tests(t: mut Tests) {
+  t.ok('HELLO with the correct protocol version', fn (t) {
+    let client = try setup
+    let buf = ByteArray.new
+
+    try client.write('*1\r\n$5\r\nHELLO\r\n$1\r\n3\r\n')
+    try client.shutdown_write
+    try client.read_all(buf)
+
+    t.true(buf.to_string.contains?('kvi'))
+    Result.Ok(nil)
+  })
+
+  t.ok('HELLO with an invalid protocol version', fn (t) {
+    let client = try setup
+    let buf = ByteArray.new
+
+    try client.write('*1\r\n$5\r\nHELLO\r\n$1\r\n2\r\n')
+    try client.shutdown_write
+    try client.read_all(buf)
+
+    t.equal(buf.to_string, "-ERR unsupported protocol version '2'\r\n")
+    Result.Ok(nil)
+  })
+
+  t.ok('HELLO with invalid syntax', fn (t) {
+    let client = try setup
+    let buf = ByteArray.new
+
+    try client.write('*1\r\n$5\r\nHELLO\r\n$2\r\n0\r\n')
+    try client.shutdown_write
+    try client.read_all(buf)
+
+    t.equal(buf.to_string, '-ERR the syntax is invalid\r\n')
+    Result.Ok(nil)
+  })
+
+  t.ok('GET with a non-existing key', fn (t) {
+    let client = try setup
+
+    try get(client, 'foo')
+    t.equal(read(client), Result.Ok('$-1\r\n'))
+
+    Result.Ok(nil)
+  })
+
+  t.ok('GET with an existing key', fn (t) {
+    let client = try setup
+
+    try set(client, 'foo', 'bar')
+    try get(client, 'foo')
+    t.equal(read(client), Result.Ok('+OK\r\n$3\r\nbar\r\n'))
+
+    Result.Ok(nil)
+  })
+
+  t.ok('GET with keys from different shards', fn (t) {
+    let client = try setup
+
+    try set(client, 'a', '1')
+    try set(client, 'b', '2')
+    try set(client, 'c', '3')
+    try set(client, 'd', '4')
+
+    try get(client, 'a')
+    try get(client, 'b')
+    try get(client, 'c')
+    try get(client, 'd')
+
+    t.equal(
+      read(client),
+      Result.Ok(
+        '+OK\r\n+OK\r\n+OK\r\n+OK\r\n$1\r\n1\r\n$1\r\n2\r\n$1\r\n3\r\n$1\r\n4\r\n',
+      ),
+    )
+
+    Result.Ok(nil)
+  })
+
+  t.ok('SET with a non-existing key', fn (t) {
+    let client = try setup
+
+    try set(client, 'a', '1')
+    t.equal(read(client), Result.Ok('+OK\r\n'))
+
+    Result.Ok(nil)
+  })
+
+  t.ok('SET with an existing key', fn (t) {
+    let client = try setup
+
+    try set(client, 'a', '1')
+    try set(client, 'a', '2')
+    try get(client, 'a')
+    t.equal(read(client), Result.Ok('+OK\r\n+OK\r\n$1\r\n2\r\n'))
+
+    Result.Ok(nil)
+  })
+
+  t.ok('DEL with a non-existing key', fn (t) {
+    let client = try setup
+
+    try del(client, 'a')
+    t.equal(read(client), Result.Ok(':0\r\n'))
+
+    Result.Ok(nil)
+  })
+
+  t.ok('DEL with an existing key', fn (t) {
+    let client = try setup
+
+    try set(client, 'a', '1')
+    try del(client, 'a')
+    try get(client, 'a')
+    t.equal(read(client), Result.Ok('+OK\r\n:1\r\n$-1\r\n'))
+
+    Result.Ok(nil)
+  })
+
+  t.ok('KEYS without any existing keys', fn (t) {
+    let client = try setup
+
+    try keys(client)
+    t.equal(read(client), Result.Ok('*0\r\n'))
+
+    Result.Ok(nil)
+  })
+
+  t.ok('KEYS with existing keys', fn (t) {
+    let client = try setup
+
+    try set(client, 'foo', '1')
+    try set(client, 'bar', '2')
+    try set(client, 'baz', '3')
+    try set(client, 'quix', '4')
+    try keys(client)
+
+    # The order isn't consistent, so we just check if the keys are anywhere in
+    # the output.
+    let out = try read(client)
+
+    t.true(out.contains?('foo'))
+    t.true(out.contains?('bar'))
+    t.true(out.contains?('baz'))
+    t.true(out.contains?('quix'))
+
+    Result.Ok(nil)
+  })
+}

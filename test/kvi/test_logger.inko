@@ -10,7 +10,7 @@ fn pub tests(t: mut Tests) {
       log.debug('foo')
       log.flush
     },
-    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'DEBUG: foo\n') },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'DEBUG [system] foo\n') },
   )
 
   t.fork(
@@ -32,7 +32,7 @@ fn pub tests(t: mut Tests) {
       log.info('foo')
       log.flush
     },
-    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'INFO: foo\n') },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'INFO [system] foo\n') },
   )
 
   t.fork(
@@ -54,7 +54,7 @@ fn pub tests(t: mut Tests) {
       log.warn('foo')
       log.flush
     },
-    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'WARN: foo\n') },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'WARN [system] foo\n') },
   )
 
   t.fork(
@@ -76,7 +76,7 @@ fn pub tests(t: mut Tests) {
       log.error('foo')
       log.flush
     },
-    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'ERROR: foo\n') },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'ERROR [system] foo\n') },
   )
 
   t.fork(
@@ -88,5 +88,16 @@ fn pub tests(t: mut Tests) {
       log.flush
     },
     test: fn (t, proc) { t.equal(proc.spawn.stderr, '') },
+  )
+
+  t.fork(
+    'Logger.info with a custom label',
+    child: fn {
+      let log = Logger.new(Level.Info).with_label('example')
+
+      log.info('foo')
+      log.flush
+    },
+    test: fn (t, proc) { t.equal(proc.spawn.stderr, 'INFO [example] foo\n') },
   )
 }

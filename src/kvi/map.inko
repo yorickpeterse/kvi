@@ -1,6 +1,10 @@
 # An optimized hash map.
+import std.clone (Clone)
 import std.cmp (Equal)
+import std.hash (Hash)
+import std.hash.siphash (SipHasher13)
 import std.iter (Stream)
+import std.rand (Random)
 
 # The load factor percentage in the (inclusive) range 1 to 10.
 let LOAD_FACTOR = 9
@@ -8,16 +12,52 @@ let LOAD_FACTOR = 9
 # The initial capacity (in entries) of a Map.
 #
 # This must be a power of two.
-let INITIAL_CAPACITY = 32
+let INITIAL_CAPACITY = 64
 
 fn inline resize_threshold(size: Int) -> Int {
   LOAD_FACTOR.wrapping_mul(size) / 10
+}
+
+# A type for generating hash codes.
+#
+# Clones of a `Hasher` all use the same seed such that different connections
+# produce the same hash codes for the same keys.
+type copy Hasher {
+  let @key0: Int
+  let @key1: Int
+
+  fn static new -> Self {
+    let rng = Random.new
+
+    with_keys(rng.int, rng.int)
+  }
+
+  fn static with_keys(key0: Int, key1: Int) -> Self {
+    Self(key0: key0, key1: key1)
+  }
+
+  fn hash[H: Hash](input: ref H) -> Int {
+    let hasher = SipHasher13.new(@key0, @key1)
+
+    input.hash(hasher)
+    hasher.finish
+  }
+}
+
+impl Clone for Hasher {
+  fn pub clone -> Self {
+    Self(key0: @key0, key1: @key1)
+  }
 }
 
 # A key and its hash code.
 type inline Key[K: Equal] {
   let @name: K
   let @hash: Int
+
+  fn static new(name: K, hash: Int) -> Self {
+    Self(name: name, hash: hash)
+  }
 }
 
 impl Equal for Key {
@@ -54,7 +94,7 @@ type Map[K: Equal, V] {
   # The entries in the map.
   #
   # An `Option.None` value signals the slot is available.
-  let @entries: Array[Option[Entry[K, V]]]
+  let mut @entries: Array[Option[Entry[K, V]]]
 
   # The number of values stored in `self`
   let mut @size: Int
@@ -87,10 +127,13 @@ type Map[K: Equal, V] {
   }
 
   # Inserts the key and value into `self`.
-  fn mut set(key: Key[K], value: V) {
+  fn mut set(key: Key[K], value: V) -> Option[V] {
     if @size >= @resize_at { resize }
 
-    insert(Entry(key: key, value: value, distance: 0))
+    match insert(Entry(key: key, value: value, distance: 0)) {
+      case Some({ @value = v }) -> Option.Some(v)
+      case _ -> Option.None
+    }
   }
 
   # Removes the key from `self`, returning the value.
@@ -133,14 +176,14 @@ type Map[K: Equal, V] {
     }
   }
 
-  # Returns an iterator over the key-value pairs in `self`.
-  fn pairs -> Stream[(ref Key[K], ref V)] {
+  # Returns an iterator over the keys in `self`.
+  fn keys -> Stream[ref K] {
     let mut idx = 0
 
     Stream.new(fn move {
       loop {
         match @entries.get(idx := idx.wrapping_add(1)) {
-          case Ok(Some(e)) -> return Option.Some((e.key, e.value))
+          case Ok(Some(e)) -> return Option.Some(e.key.name)
           case Ok(_) -> {}
           case _ -> return Option.None
         }
@@ -148,61 +191,26 @@ type Map[K: Equal, V] {
     })
   }
 
-  # Calls `fun` for each entry, replacing its value with a new one.
-  #
-  # If `fun` returns an `Option.Some`, the entry's value is overwritten,
-  # otherwise it's left as-is.
-  fn mut update_values(fun: fn (ref V) -> Option[V]) {
-    for (idx, entry) in @entries.iter.with_index {
-      let val = match entry {
-        case Some(v) -> {
-          match fun.call(v.value) {
-            case Some(v) -> v
-            case _ -> next
-          }
-        }
-        case _ -> next
-      }
-
-      # The old value is guaranteed to be a Some at this point.
-      let old = @entries.swap(idx, Option.None).get
-
-      @entries.swap(idx, Option.Some(old.with_value(val)))
-    }
-  }
-
   fn mut resize {
     # This reserves space for _additional_ values, which due to it being the
     # existing size will double the space.
-    @entries.reserve(@entries.size)
+    let new_size = @entries.size.wrapping_mul(2)
+    let entries = @entries := Array.with_capacity(new_size)
 
-    for _ in 0.until(@entries.size) { @entries.push(Option.None) }
+    for _ in 0.until(new_size) { @entries.push(Option.None) }
 
-    # Now we can update the threshold according to the new size.
-    @resize_at = resize_threshold(@entries.size)
-
-    # First we have to reset the distance to a sentinel value such that we can
-    # tell the difference between entries that still need to be rehashed, and
-    # those that are rehashed into their ideal slots.
-    for idx in 0.until(@entries.size) {
-      match @entries.swap(idx, Option.None) {
-        case Some(v) -> @entries.set(idx, Option.Some(v.with_distance(-1)))
-        case _ -> {}
-      }
-    }
-
-    # We need to reset the size because we increment it as part of rehashing.
+    @resize_at = resize_threshold(new_size)
     @size = 0
 
-    for idx in 0.until(@entries.size) {
-      match @entries.swap(idx, Option.None) {
-        case Some(v) if v.distance == -1 -> insert(v.with_distance(0))
-        case ex -> @entries.set(idx, ex)
+    for slot in entries {
+      match slot {
+        case Some(entry) -> insert(entry.with_distance(0))
+        case _ -> next
       }
     }
   }
 
-  fn mut insert(new: Entry[K, V]) {
+  fn mut insert(new: Entry[K, V]) -> Option[Entry[K, V]] {
     let mut idx = desired_index_for(new.key.hash)
     let mut insert = new
 
@@ -212,13 +220,13 @@ type Map[K: Equal, V] {
         case _ -> {
           @entries.set(idx, Option.Some(insert))
           @size = @size.wrapping_add(1)
-          return
+          return Option.None
         }
       }
 
       if existing.key == insert.key {
         @entries.set(idx, Option.Some(insert))
-        return
+        return Option.Some(existing)
       }
 
       # If the entry we want to insert is further from its desired distance than

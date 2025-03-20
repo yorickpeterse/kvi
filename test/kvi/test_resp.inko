@@ -1,0 +1,271 @@
+import kvi.map (Hasher)
+import kvi.resp (Command, Error, INVALID_SYNTAX, Kind, Stream)
+import std.bytes (Bytes)
+import std.cmp (min)
+import std.io (Error as IoError, Read, Write)
+import std.test (Tests)
+
+type ReaderWriter {
+  let @buffer: ByteArray
+  let mut @offset: Int
+
+  fn static new -> Self {
+    Self(buffer: ByteArray.new, offset: 0)
+  }
+}
+
+impl Read for ReaderWriter {
+  fn pub mut read(into: mut ByteArray, size: Int) -> Result[Int, IoError] {
+    if @buffer.empty? { return Result.Ok(0) }
+
+    let end = min(@offset + size, @buffer.size)
+    let slice = @buffer.slice(@offset, end)
+    let len = slice.size
+
+    if len > 0 {
+      into.append(slice)
+      @offset = end
+    }
+
+    if len == 0 or end == @buffer.size {
+      @offset = 0
+      @buffer.clear
+    }
+
+    Result.Ok(len)
+  }
+}
+
+impl Write for ReaderWriter {
+  fn pub mut write[B: Bytes](bytes: ref B) -> Result[Nil, IoError] {
+    @buffer.append(bytes)
+    Result.Ok(nil)
+  }
+
+  fn pub mut flush -> Result[Nil, IoError] {
+    Result.Ok(nil)
+  }
+}
+
+fn stream(input: String) -> Stream[ReaderWriter] {
+  let rw = ReaderWriter.new
+  let _ = rw.write(input)
+
+  Stream.new(rw)
+}
+
+fn closed[T] -> Result[T, uni Error] {
+  Result.Error(recover Error.Closed)
+}
+
+fn invalid_syntax[T] -> Result[T, uni Error] {
+  Result.Error(recover Error.Hard(INVALID_SYNTAX))
+}
+
+fn invalid_command[T](name: String) -> Result[T, uni Error] {
+  Result.Error(recover Error.Soft('the command ${name} is invalid'))
+}
+
+fn pub tests(t: mut Tests) {
+  t.test('ReaderWriter.read and ReaderWriter.write', fn (t) {
+    let rw = ReaderWriter.new
+    let buf = ByteArray.new
+
+    t.equal(rw.read(buf, size: 32), Result.Ok(0))
+    t.true(buf.empty?)
+    t.true(rw.buffer.empty?)
+
+    t.equal(rw.write('abc'), Result.Ok(nil))
+    t.equal(rw.read(buf, size: 32), Result.Ok(3))
+    t.equal(buf.to_string, 'abc')
+    t.true(rw.buffer.empty?)
+
+    t.equal(rw.read(buf, size: 32), Result.Ok(0))
+    t.equal(buf.to_string, 'abc')
+    t.true(rw.buffer.empty?)
+
+    t.equal(rw.write('foo'), Result.Ok(nil))
+    t.equal(rw.read(buf, size: 1), Result.Ok(1))
+    t.equal(buf.to_string, 'abcf')
+    t.equal(rw.buffer.size, 3)
+
+    t.equal(rw.read(buf, size: 1), Result.Ok(1))
+    t.equal(buf.to_string, 'abcfo')
+    t.equal(rw.buffer.size, 3)
+    t.equal(rw.read(buf, size: 1), Result.Ok(1))
+    t.equal(buf.to_string, 'abcfoo')
+    t.equal(rw.buffer.size, 0)
+
+    t.equal(rw.write('hello'), Result.Ok(nil))
+    t.equal(rw.write('world'), Result.Ok(nil))
+    t.equal(rw.buffer.to_string, 'helloworld')
+    t.equal(rw.read(buf, size: 32), Result.Ok(10))
+    t.equal(buf.to_string, 'abcfoohelloworld')
+  })
+
+  t.test('Stream.start_pipeline', fn (t) {
+    let stream = stream('*1\r\n')
+
+    t.equal(stream.remaining, 0)
+    t.equal(stream.start_pipeline, Result.Ok(nil))
+    t.equal(stream.remaining, 1)
+  })
+
+  t.test('Stream.read_pipeline_command', fn (t) {
+    let stream = stream('*2\r\n$5\r\nHELLO\r\n$3\r\nGET\r\n')
+
+    t.equal(stream.read_pipeline_command, Result.Ok(Command.Hello))
+    t.equal(stream.remaining, 1)
+    t.equal(stream.read_pipeline_command, Result.Ok(Command.Get))
+    t.equal(stream.remaining, 0)
+  })
+
+  t.test('Stream.read_pipeline_string', fn (t) {
+    let stream = stream('*1\r\n$5\r\nhello\r\n')
+
+    t.equal(stream.start_pipeline, Result.Ok(nil))
+    t.equal(stream.remaining, 1)
+    t.equal(stream.read_pipeline_string, Result.Ok('hello'))
+    t.equal(stream.remaining, 0)
+  })
+
+  t.ok('Stream.read_key', fn (t) {
+    let hasher = Hasher.with_keys(0, 0)
+    let stream = stream('*1\r\n$5\r\nhello\r\n')
+
+    t.equal(stream.start_pipeline, Result.Ok(nil))
+
+    let key = recover try stream.read_key(hasher)
+
+    t.equal(key.name, 'hello'.to_byte_array)
+    t.equal(key.hash, -814240583235389301)
+    t.equal(stream.remaining, 0)
+
+    Result.Ok(nil)
+  })
+
+  t.test('Stream.read_pipeline_bytes', fn (t) {
+    let stream = stream('*1\r\n$5\r\nhello\r\n')
+
+    t.equal(stream.start_pipeline, Result.Ok(nil))
+    t.equal(stream.read_pipeline_bytes, Result.Ok('hello'.to_byte_array))
+    t.equal(stream.remaining, 0)
+    t.equal(stream.read_buffer.size, 0)
+  })
+
+  t.test('Stream.skip_remaining_strings', fn (t) {
+    let stream = stream('*1\r\n$5\r\nhello\r\n')
+    let buf = ByteArray.new
+
+    t.equal(stream.start_pipeline, Result.Ok(nil))
+    t.equal(stream.remaining, 1)
+    t.equal(stream.skip_remaining_strings, Result.Ok(nil))
+    t.equal(stream.remaining, 0)
+    t.equal(stream.stream.read(into: buf, size: 32), Result.Ok(0))
+    t.equal(buf.size, 0)
+  })
+
+  t.test('Stream.read_command', fn (t) {
+    t.equal(stream('$3\r\nDEL\r\n').read_command, Result.Ok(Command.Delete))
+    t.equal(stream('$3\r\nGET\r\n').read_command, Result.Ok(Command.Get))
+    t.equal(stream('$3\r\nSET\r\n').read_command, Result.Ok(Command.Set))
+    t.equal(stream('$4\r\nKEYS\r\n').read_command, Result.Ok(Command.Keys))
+    t.equal(stream('$5\r\nHELLO\r\n').read_command, Result.Ok(Command.Hello))
+
+    t.equal(stream('$3\r\nFOO\r\n').read_command, invalid_command('FOO'))
+    t.equal(stream('$4\r\nDELZ\r\n').read_command, invalid_command('DELZ'))
+    t.equal(stream('$4\r\nGETZ\r\n').read_command, invalid_command('GETZ'))
+    t.equal(stream('$4\r\nSETZ\r\n').read_command, invalid_command('SETZ'))
+    t.equal(stream('$4\r\nHELZ\r\n').read_command, invalid_command('HELZ'))
+    t.equal(stream('$4\r\nKEYZ\r\n').read_command, invalid_command('KEYZ'))
+    t.equal(stream('$5\r\nKEYSS\r\n').read_command, invalid_command('KEYSS'))
+    t.equal(stream('$5\r\nHELLX\r\n').read_command, invalid_command('HELLX'))
+  })
+
+  t.test('Stream.read_string_literal', fn (t) {
+    let stream = stream('$5\r\nhello\r\n')
+
+    t.equal(stream.read_string_literal, Result.Ok('hello'))
+    t.equal(stream.read_buffer.size, 0)
+  })
+
+  t.test('Stream.read_array', fn (t) {
+    t.equal(stream('*0\r\n').read_array, Result.Ok(0))
+    t.equal(stream('*1\r\n').read_array, Result.Ok(1))
+    t.equal(stream(':0\r\n').read_array, invalid_syntax)
+    t.equal(stream('').read_array, closed)
+  })
+
+  t.test('Stream.read_bulk_string_value', fn (t) {
+    let stream = stream('*1\r\n$5\r\nhello\r\n')
+
+    t.equal(stream.start_pipeline, Result.Ok(nil))
+    t.equal(stream.read_bulk_string_value, Result.Ok('hello'.to_byte_array))
+    t.equal(stream.remaining, 0)
+  })
+
+  t.test('Stream.read_bulk_string', fn (t) {
+    let stream = stream('$5\r\n')
+
+    t.equal(stream.read_bulk_string, Result.Ok(5))
+  })
+
+  t.test('Stream.read_kind', fn (t) {
+    t.equal(stream('*4\r\n').read_kind, Result.Ok(Kind.Array(4)))
+    t.equal(stream('$4\r\n').read_kind, Result.Ok(Kind.BulkString(4)))
+    t.equal(stream(':0\r\n').read_kind, Result.Ok(Kind.Int(0)))
+    t.equal(stream(':+0\r\n').read_kind, Result.Ok(Kind.Int(0)))
+    t.equal(stream(':-0\r\n').read_kind, Result.Ok(Kind.Int(0)))
+    t.equal(stream(':1234\r\n').read_kind, Result.Ok(Kind.Int(1234)))
+    t.equal(stream(':+1234\r\n').read_kind, Result.Ok(Kind.Int(1234)))
+    t.equal(stream(':-1234\r\n').read_kind, Result.Ok(Kind.Int(-1234)))
+
+    t.equal(stream('*').read_kind, closed)
+    t.equal(stream('*4').read_kind, closed)
+    t.equal(stream('*4\r').read_kind, closed)
+    t.equal(stream('*4ab').read_kind, invalid_syntax)
+
+    t.equal(stream('$').read_kind, closed)
+    t.equal(stream('$4').read_kind, closed)
+    t.equal(stream('$4\r').read_kind, closed)
+    t.equal(stream('$4ab').read_kind, invalid_syntax)
+
+    t.equal(stream(':').read_kind, closed)
+    t.equal(stream(':0').read_kind, closed)
+    t.equal(stream(':0\r').read_kind, closed)
+    t.equal(stream(':+\r').read_kind, closed)
+    t.equal(stream(':+\r\n').read_kind, closed)
+    t.equal(stream(':0ab').read_kind, invalid_syntax)
+    t.equal(stream(':023ab').read_kind, invalid_syntax)
+    t.equal(stream(':0234b').read_kind, invalid_syntax)
+  })
+
+  t.test('Stream.read_size', fn (t) {
+    let s1 = stream('1\r\n')
+
+    t.equal(s1.read_size, Result.Ok(1))
+    t.true(s1.read_buffer.empty?)
+
+    let s2 = stream('12345\r\n')
+
+    t.equal(s2.read_size, Result.Ok(12345))
+    t.true(s2.read_buffer.empty?)
+
+    t.equal(stream('1\r\n10').read_size, Result.Ok(1))
+    t.equal(stream('12\r\n').read_size, Result.Ok(12))
+    t.equal(stream('123\r\n').read_size, Result.Ok(123))
+    t.equal(stream('1234\r\n').read_size, Result.Ok(1234))
+    t.equal(stream('12345\r\n').read_size, Result.Ok(12345))
+    t.equal(stream('123456\r\n').read_size, Result.Ok(123456))
+
+    t.equal(stream('').read_size, closed)
+    t.equal(stream('\r\n').read_size, closed)
+    t.equal(stream('1').read_size, closed)
+    t.equal(stream('12').read_size, closed)
+    t.equal(stream('123').read_size, closed)
+    t.equal(stream('123\r').read_size, closed)
+    t.equal(stream('123\n').read_size, closed)
+    t.equal(stream('123\n\r').read_size, invalid_syntax)
+    t.equal(stream('123ab\r\n').read_size, invalid_syntax)
+  })
+}

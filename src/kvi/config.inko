@@ -24,16 +24,9 @@ type Config {
 
   # The number of processes to use for accepting new connections.
   #
-  # This defaults to the number of CPU cores. When binding to multiple IP
-  # addresses, the total number of processes is the number of IPs times the
-  # value of this setting.
+  # This defaults to 1. When binding to multiple IP addresses, the total number
+  # of processes is the number of IPs times the value of this setting.
   let mut @accepters: NonZeroInt
-
-  # The fragmentation percentage (1-100) to allow before defragmentation is
-  # necessary.
-  #
-  # The default is 10%.
-  let mut @fragmentation: NonZeroInt
 
   # The minimum type of log message to enable.
   #
@@ -45,8 +38,7 @@ type Config {
       ips: [IpAddress.v4(0, 0, 0, 0)],
       port: NonZeroInt.new(2025_2),
       shards: NonZeroInt.new(cpu_cores),
-      accepters: NonZeroInt.new(cpu_cores),
-      fragmentation: NonZeroInt.new(10),
+      accepters: NonZeroInt.new(1),
       log_level: Level.Info,
     )
   }
@@ -87,15 +79,6 @@ type Config {
     Result.Ok(nil)
   }
 
-  fn mut parse_fragmentation(value: String) -> Result[Nil, String] {
-    match NonZeroInt.from_decimal_string(value) {
-      case Some(p) if p.to_int <= 100 -> @fragmentation = p
-      case _ -> throw "'${value}' is an invalid fragmentation threshold"
-    }
-
-    Result.Ok(nil)
-  }
-
   fn mut parse_log_level(value: String) -> Result[Nil, String] {
     match Level.parse(value) {
       case Some(v) -> @log_level = v
@@ -113,7 +96,6 @@ impl Clone for Config {
       port: @port,
       shards: @shards,
       accepters: @accepters,
-      fragmentation: @fragmentation,
       log_level: @log_level,
     )
   }

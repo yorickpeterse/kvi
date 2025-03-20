@@ -20,7 +20,7 @@ uninstall:
 
 release/version: .check-version
 	sed -E -i -e "s/^let VERSION = '([^']+)'$$/let VERSION = '${VERSION}'/" \
-		src/${NAME}/cli.inko
+		src/${NAME}.inko
 
 release/changelog: .check-version build
 	./build/${NAME} "${VERSION}"

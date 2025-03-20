@@ -66,17 +66,17 @@ fn pub tests(t: mut Tests) {
     t.equal(map.get(key_with_hash('f', 32)), Option.Some(6))
     t.equal(map.get(key_with_hash('g', 32)), Option.Some(7))
 
-    let a = map.entries.get(5).get.as_ref.get
+    let a = map.entries.get(1).get.as_ref.get
     let b = map.entries.get(2).get.as_ref.get
     let c = map.entries.get(3).get.as_ref.get
     let d = map.entries.get(4).get.as_ref.get
     let e = map.entries.get(31).get.as_ref.get
-    let f = map.entries.get(0).get.as_ref.get
-    let g = map.entries.get(1).get.as_ref.get
+    let f = map.entries.get(32).get.as_ref.get
+    let g = map.entries.get(33).get.as_ref.get
 
     t.equal(a.key.name, 'a')
     t.equal(a.key.hash, 1)
-    t.equal(a.distance, 4)
+    t.equal(a.distance, 0)
 
     t.equal(b.key.name, 'b')
     t.equal(b.key.hash, 1)

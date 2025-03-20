@@ -52,15 +52,8 @@ impl ToString for Level {
 }
 
 impl Equal for Level {
-  fn pub ==(other: Level) -> Bool {
-    match (self, other) {
-      case (Debug, Debug) -> true
-      case (Info, Info) -> true
-      case (Warn, Warn) -> true
-      case (Error, Error) -> true
-      case (None, None) -> true
-      case _ -> false
-    }
+  fn pub inline ==(other: Level) -> Bool {
+    to_int == other.to_int
   }
 }
 
@@ -96,10 +89,10 @@ type async LogWriter {
     promise.set(nil)
   }
 
-  fn async mut write(level: Level, message: String) {
+  fn async mut write(level: Level, label: String, message: String) {
     # Logging failures aren't a big deal and probably won't happen anyway, so we
     # ignore them.
-    let _ = @output.write('${level}: ${message}\n')
+    let _ = @output.write('${level} [${label}] ${message}\n')
   }
 }
 
@@ -117,10 +110,15 @@ type async LogWriter {
 type inline Logger {
   let @writer: LogWriter
   let @level: Level
+  let @label: String
 
   # Returns a `Logger` that logs any kind of message.
   fn static new(level: Level) -> Logger {
-    Logger(writer: LogWriter.new, level: level)
+    Logger(writer: LogWriter.new, level: level, label: 'system')
+  }
+
+  fn with_label(label: String) -> Logger {
+    Logger(writer: @writer, level: @level, label: label)
   }
 
   fn mut debug(message: String) {
@@ -149,12 +147,12 @@ type inline Logger {
   }
 
   fn mut write(level: Level, message: String) {
-    if level >= @level { @writer.write(level, message) }
+    if level >= @level { @writer.write(level, @label, message) }
   }
 }
 
 impl Clone for Logger {
   fn pub clone -> Logger {
-    Logger(writer: @writer, level: @level)
+    Logger(writer: @writer, level: @level, label: @label)
   }
 }

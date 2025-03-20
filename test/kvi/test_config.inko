@@ -50,25 +50,6 @@ fn pub tests(t: mut Tests) {
     t.equal(conf.accepters.to_int, 123)
   })
 
-  t.test('Config.parse_fragmentation', fn (t) {
-    let conf = Config.new
-
-    t.equal(conf.parse_fragmentation('90'), Result.Ok(nil))
-    t.equal(conf.fragmentation.to_int, 90)
-
-    t.equal(
-      conf.parse_fragmentation('abc'),
-      Result.Error("'abc' is an invalid fragmentation threshold"),
-    )
-    t.equal(conf.fragmentation.to_int, 90)
-
-    t.equal(
-      conf.parse_fragmentation('125'),
-      Result.Error("'125' is an invalid fragmentation threshold"),
-    )
-    t.equal(conf.fragmentation.to_int, 90)
-  })
-
   t.test('Config.parse_log_level', fn (t) {
     let conf = Config.new
 

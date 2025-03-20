@@ -1,0 +1,614 @@
+import kvi (VERSION)
+import kvi.map (Hasher, Key)
+import std.bytes (Bytes)
+import std.cmp (Equal)
+import std.fmt (Format, Formatter)
+import std.io (Error as IoError, Read, Write)
+import std.string (ToString)
+
+let ADD = 43
+let AST = 42
+let CLN = 58
+let CR = 13
+let DLR = 36
+let LF = 10
+let NINE = 57
+let PRC = 37
+let SUB = 45
+let ZERO = 48
+
+let SMALL_BULK_STRING = 128
+let INVALID_SYNTAX = 'the syntax is invalid'
+
+fn inline parse_digit(current: Int, byte: Int) -> Int {
+  current.wrapping_mul(10).wrapping_add(byte - ZERO)
+}
+
+fn inline digit?(byte: Int) -> Bool {
+  byte >= ZERO and byte <= NINE
+}
+
+# An error produced when producing or consuming RESP3 messages.
+type inline enum Error {
+  # A fatal error that should be reported back to the client and terminate the
+  # connection.
+  case Hard(String)
+
+  # An error that should be reported back to the client, but not terminate the
+  # connection.
+  case Soft(String)
+
+  # The connection is closed by the client.
+  case Closed
+
+  # A generic IO error produced while reading from or writing to the stream.
+  #
+  # These errors terminate the connection but are _not_ reported to the client.
+  case ReadWrite(IoError)
+}
+
+impl ToString for Error {
+  fn pub to_string -> String {
+    match self {
+      case Hard(v) or Soft(v) -> v
+      case Closed -> 'the connection is closed by the client'
+      case ReadWrite(v) -> v.to_string
+    }
+  }
+}
+
+impl Equal for Error {
+  fn pub ==(other: ref Error) -> Bool {
+    match (self, other) {
+      case (Hard(a), Hard(b)) -> a == b
+      case (Soft(a), Soft(b)) -> a == b
+      case (Closed, Closed) -> true
+      case (ReadWrite(a), ReadWrite(b)) -> a == b
+      case _ -> false
+    }
+  }
+}
+
+impl Format for Error {
+  fn pub fmt(formatter: mut Formatter) {
+    match self {
+      case Hard(v) -> formatter.tuple('Hard').field(v).finish
+      case Soft(v) -> formatter.tuple('Soft').field(v).finish
+      case Closed -> formatter.tuple('Closed').finish
+      case ReadWrite(v) -> formatter.tuple('ReadWrite').field(v).finish
+    }
+  }
+}
+
+type copy enum Kind {
+  case Array(Int)
+  case Int(Int)
+  case BulkString(Int)
+}
+
+impl Equal for Kind {
+  fn pub ==(other: Kind) -> Bool {
+    match (self, other) {
+      case (Array(a), Array(b)) -> a == b
+      case (Int(a), Int(b)) -> a == b
+      case (BulkString(a), BulkString(b)) -> a == b
+      case _ -> false
+    }
+  }
+}
+
+impl Format for Kind {
+  fn pub fmt(formatter: mut Formatter) {
+    match self {
+      case Array(v) -> formatter.tuple('Array').field(v).finish
+      case Int(v) -> formatter.tuple('Int').field(v).finish
+      case BulkString(v) -> formatter.tuple('BulkString').field(v).finish
+    }
+  }
+}
+
+type copy enum Command {
+  case Delete
+  case Get
+  case Hello
+  case Keys
+  case Set
+
+  fn static parse(bytes: ref ByteArray) -> Option[Command] {
+    let len = bytes.size
+
+    # For most commands the first tree bytes form a unique prefix. In some cases
+    # there's a shared prefix (e.g. GET and GETEX), so in such cases we also
+    # need to compare the remainder.
+    #
+    # The end goal of this somewhat complicated `match` is to reduce the amount
+    # of linear scans we need to perform, as parsing commands is something we
+    # expect to do often.
+    #
+    # While this match is a bit ugly, until
+    # https://github.com/inko-lang/inko/issues/827 is addressed it's more or
+    # less the best we can do.
+    match
+      (bytes.get(2).or(-1) << 16)
+        | (bytes.get(1).or(-1) << 8)
+        | bytes.get(0).or(-1)
+    {
+      # DEL[...]
+      case 0x4c4544 -> if len == 3 { return Option.Some(Command.Delete) }
+      # GET[...]
+      case 0x544547 -> if len == 3 { return Option.Some(Command.Get) }
+      # HEL[...]
+      case 0x4c4548 -> {
+        if len == 5 and bytes.ends_with?('LO') {
+          return Option.Some(Command.Hello)
+        }
+      }
+      # KEY[...]
+      case 0x59454b -> {
+        if len == 4 and bytes.ends_with?('S') {
+          return Option.Some(Command.Keys)
+        }
+      }
+      # SET[...]
+      case 0x544553 -> if len == 3 { return Option.Some(Command.Set) }
+      case _ -> {}
+    }
+
+    Option.None
+  }
+}
+
+impl Equal for Command {
+  fn pub ==(other: Command) -> Bool {
+    match (self, other) {
+      case (Delete, Delete) -> true
+      case (Get, Get) -> true
+      case (Hello, Hello) -> true
+      case (Keys, Keys) -> true
+      case (Set, Set) -> true
+      case _ -> false
+    }
+  }
+}
+
+impl Format for Command {
+  fn pub fmt(formatter: mut Formatter) {
+    match self {
+      case Delete -> formatter.tuple('Delete').finish
+      case Get -> formatter.tuple('Get').finish
+      case Hello -> formatter.tuple('Hello').finish
+      case Keys -> formatter.tuple('Keys').finish
+      case Set -> formatter.tuple('Set').finish
+    }
+  }
+}
+
+# A type for generating RESP messages and writing them to an output stream.
+#
+# RESP being a text based protocol means constructing certain messages requires
+# a bit of fiddling around. For example, sizes are represented as ASCII digits
+# rather than a raw sequence of bytes (e.g. the little-endian representation of
+# an integer). This means such values have to be converted to a `String`,
+# concatenated with other data, then send to the stream.
+#
+# The `Generator` type makes it easier to generate these messages such that only
+# a single write is necessary, reducing the time spent in IO operations.
+type inline Generator {
+  let @buffer: ByteArray
+
+  fn static new -> Self {
+    Self(ByteArray.new)
+  }
+
+  fn mut map(size: Int) {
+    @buffer.push(PRC)
+    @buffer.append(size.to_string)
+    terminator
+  }
+
+  fn mut array(size: Int) {
+    @buffer.push(AST)
+    @buffer.append(size.to_string)
+    terminator
+  }
+
+  fn mut bulk_string(size: Int) {
+    @buffer.push(DLR)
+    @buffer.append(size.to_string)
+    terminator
+  }
+
+  fn mut bulk_string_value[B: Bytes](bytes: ref B) {
+    @buffer.append(bytes)
+    terminator
+  }
+
+  fn mut bulk_string_literal(value: String) {
+    bulk_string(value.size)
+    bulk_string_value(value)
+  }
+
+  fn mut simple_string(value: String) {
+    @buffer.push(ADD)
+    @buffer.append(value)
+    terminator
+  }
+
+  fn mut nil {
+    bulk_string(-1)
+  }
+
+  fn mut int(value: Int) {
+    @buffer.push(CLN)
+    @buffer.append(value.to_string)
+    terminator
+  }
+
+  fn mut terminator {
+    @buffer.reserve(2)
+    @buffer.push(CR)
+    @buffer.push(LF)
+  }
+
+  fn mut error(message: String) {
+    @buffer.push(SUB)
+    @buffer.append('ERR ')
+    @buffer.append(message)
+    terminator
+  }
+
+  fn mut flush_to[T: mut + Read + Write](
+    stream: mut Stream[T],
+  ) -> Result[Nil, uni Error] {
+    let res = stream.write(@buffer)
+
+    @buffer.clear
+    res
+  }
+}
+
+# A type for parsing and generating RESP messages.
+type Stream[T: mut + Read + Write] {
+  # The underlying IO stream, typically a socket.
+  let @stream: T
+
+  # A buffer for reading RESP messages.
+  let @read_buffer: ByteArray
+
+  # A type for generating RESP messages.
+  let @generator: Generator
+
+  # The number of remaining values in a pipeline to process.
+  let mut @remaining: Int
+
+  fn static new(stream: T) -> Self {
+    Self(
+      stream: stream,
+      read_buffer: ByteArray.new,
+      generator: Generator.new,
+      remaining: 0,
+    )
+  }
+
+  fn mut write_hello_response -> Result[Nil, uni Error] {
+    @generator.map(3)
+    @generator.bulk_string_literal('server')
+    @generator.bulk_string_literal('kvi')
+    @generator.bulk_string_literal('version')
+    @generator.bulk_string_literal(VERSION)
+    @generator.bulk_string_literal('proto')
+    @generator.int(3)
+    @generator.flush_to(self)
+  }
+
+  fn mut write_nil -> Result[Nil, uni Error] {
+    @generator.nil
+    @generator.flush_to(self)
+  }
+
+  fn mut write_map(size: Int) -> Result[Nil, uni Error] {
+    @generator.map(size)
+    @generator.flush_to(self)
+  }
+
+  fn mut write_array(size: Int) -> Result[Nil, uni Error] {
+    @generator.array(size)
+    @generator.flush_to(self)
+  }
+
+  fn mut write_bulk_string[B: Bytes](value: ref B) -> Result[Nil, uni Error] {
+    let len = value.size
+
+    @generator.bulk_string(len)
+
+    # For large values we'll write directly in order to keep memory usage low.
+    # This means that sending a 1 GiB value won't need an extra 1 GiB just to
+    # generate the message.
+    if len <= SMALL_BULK_STRING {
+      @generator.bulk_string_value(value)
+      @generator.flush_to(self)
+    } else {
+      try @generator.flush_to(self)
+      try write(value)
+      @generator.terminator
+      @generator.flush_to(self)
+    }
+  }
+
+  fn mut write_ok -> Result[Nil, uni Error] {
+    write_simple_string('OK')
+  }
+
+  fn mut write_simple_string(value: String) -> Result[Nil, uni Error] {
+    @generator.simple_string(value)
+    @generator.flush_to(self)
+  }
+
+  fn mut write_int(value: Int) -> Result[Nil, uni Error] {
+    @generator.int(value)
+    @generator.flush_to(self)
+  }
+
+  fn mut write_error(message: String) -> Result[Nil, uni Error] {
+    @generator.error(message)
+    @generator.flush_to(self)
+  }
+
+  # Parses the start of a new command pipeline.
+  fn mut start_pipeline -> Result[Nil, uni Error] {
+    @remaining = try read_array
+    Result.Ok(nil)
+  }
+
+  # Parses the next command to run as part of a pipeline.
+  fn mut read_pipeline_command -> Result[Command, uni Error] {
+    if @remaining == 0 { @remaining = try read_array }
+
+    @remaining = @remaining.wrapping_sub(1)
+    read_command
+  }
+
+  # Parses the next value as a bulk string argument in a pipeline.
+  fn mut read_pipeline_string -> Result[String, uni Error] {
+    @remaining = @remaining.wrapping_sub(1)
+    read_string_literal
+  }
+
+  # Reads the value of a bulk string into a `Key`.
+  fn mut read_key(hasher: Hasher) -> Result[uni Key[ByteArray], uni Error] {
+    let key = recover {
+      let name = try read_pipeline_bytes
+      let hash = hasher.hash(name)
+
+      Key.new(name, hash)
+    }
+
+    Result.Ok(key)
+  }
+
+  # Parses the next value as a bulk string argument in a pipeline, returning the
+  # value as a `ByteArray`.
+  fn mut read_pipeline_bytes -> Result[ByteArray, uni Error] {
+    @remaining = @remaining.wrapping_sub(1)
+    try read_bytes(try read_bulk_string)
+    try read_terminator
+
+    let res = @read_buffer.clone
+
+    @read_buffer.clear
+    Result.Ok(res)
+  }
+
+  # Skips all remaining bulk strings in the pipeline.
+  fn mut skip_remaining_strings -> Result[Nil, uni Error] {
+    for _ in 0.until(@remaining := 0) {
+      try read_bytes(try read_bulk_string)
+      try read_terminator
+      @read_buffer.clear
+    }
+
+    Result.Ok(nil)
+  }
+
+  # Parses the next command from the stream.
+  #
+  # This method returns an `Error` error if the input is an invalid or
+  # unsupported command.
+  fn mut read_command -> Result[Command, uni Error] {
+    try read_bytes(try read_bulk_string)
+    try read_terminator
+
+    match Command.parse(@read_buffer) {
+      case Some(v) -> {
+        @read_buffer.clear
+        Result.Ok(v)
+      }
+      case _ -> {
+        let name = @read_buffer.drain_to_string
+
+        # If we encounter an invalid command it's unclear what any of the
+        # strings that follows it mean: they could be arguments, separate
+        # commands, or something else entirely. As such, we have no option but
+        # to skip over all of them.
+        try skip_remaining_strings
+        Result.Error(invalid_command(name))
+      }
+    }
+  }
+
+  # Parses a bulk string into a `String` value.
+  fn mut read_string_literal -> Result[String, uni Error] {
+    try read_bytes(try read_bulk_string)
+    try read_terminator
+    Result.Ok(@read_buffer.drain_to_string)
+  }
+
+  # Parses the start of an array and returns its size.
+  fn mut read_array -> Result[Int, uni Error] {
+    match read_kind {
+      case Ok(Array(n)) -> Result.Ok(n)
+      case Ok(_) -> Result.Error(invalid_syntax)
+      case Error(e) -> Result.Error(e)
+    }
+  }
+
+  # Reads a sequence of bulk string bytes into a `ByteArray`.
+  fn mut read_bulk_string_value -> Result[ByteArray, uni Error] {
+    let len = try read_bulk_string
+    let buf = ByteArray.with_capacity(len)
+
+    match @stream.read_exact(buf, len) {
+      case Ok(_) -> try read_terminator
+      case Error(e) -> throw recover Error.ReadWrite(e)
+    }
+
+    @remaining -= 1
+    Result.Ok(buf)
+  }
+
+  # Parses the start of a bulk string and returns its size (in bytes).
+  fn mut read_bulk_string -> Result[Int, uni Error] {
+    match read_kind {
+      case Ok(BulkString(n)) -> Result.Ok(n)
+      case Ok(_) -> Result.Error(invalid_syntax)
+      case Error(e) -> Result.Error(e)
+    }
+  }
+
+  # Parses a single value into an `Kind`.
+  fn mut read_kind -> Result[Kind, uni Error] {
+    match try read_byte {
+      case AST -> Result.Ok(Kind.Array(try read_size))
+      case DLR -> Result.Ok(Kind.BulkString(try read_size))
+      case CLN -> Result.Ok(Kind.Int(try read_integer))
+      case _ -> throw invalid_syntax
+    }
+  }
+
+  # Parses the size of a value (e.g. the size of a bulk string).
+  fn mut read_size -> Result[Int, uni Error] {
+    read_digits(-1)
+  }
+
+  # Parses a signed integer and returns its value as an `Int`.
+  fn mut read_integer -> Result[Int, uni Error] {
+    match read_byte {
+      case Ok(ADD) -> read_size
+      case Ok(SUB) -> Result.Ok(0 - try read_size)
+      case Ok(v) -> read_digits(v)
+      case Error(e) -> Result.Error(e)
+    }
+  }
+
+  # Parses a sequence of digits into an `Int`.
+  #
+  # The `initial` argument is the first digit, or `-1` to signal the lack of an
+  # existing (= pre-parsed) initial digit.
+  fn mut read_digits(initial: Int) -> Result[Int, uni Error] {
+    let mut val = 0
+
+    # The minimum number of bytes is three: one for a single digit, and two for
+    # \r\n. This means we can read the initial/minimum amount of necessary data
+    # in a single call.
+    if initial >= 0 { @read_buffer.push(initial) }
+
+    try read_bytes(3 - @read_buffer.size)
+
+    match (@read_buffer.get(0), @read_buffer.get(1), @read_buffer.get(2)) {
+      case (Ok(a), Ok(CR), Ok(LF)) if digit?(a) -> {
+        @read_buffer.clear
+        val = parse_digit(val, a)
+        return Result.Ok(val)
+      }
+      case (Ok(a), Ok(b), Ok(CR)) if digit?(a) and digit?(b) -> {
+        @read_buffer.clear
+        val = parse_digit(val, a)
+        val = parse_digit(val, b)
+        try read_lf
+        return Result.Ok(val)
+      }
+      case (Ok(a), Ok(b), Ok(c)) if digit?(a) and digit?(b) and digit?(c) -> {
+        @read_buffer.clear
+        val = parse_digit(val, a)
+        val = parse_digit(val, b)
+        val = parse_digit(val, c)
+      }
+      case _ -> throw invalid_syntax
+    }
+
+    # For the remaining input we can only read at most two bytes per time,
+    # otherwise we might read too much. For example, for the input `123\r\n` the
+    # above code reads `123`, leaving us with the remaining `\r\n`.
+    loop {
+      try read_bytes(2)
+
+      match (@read_buffer.get(0), @read_buffer.get(1)) {
+        case (Ok(CR), Ok(LF)) -> {
+          @read_buffer.clear
+          break
+        }
+        case (Ok(a), Ok(CR)) if digit?(a) -> {
+          @read_buffer.clear
+          val = parse_digit(val, a)
+          try read_lf
+          break
+        }
+        case (Ok(a), Ok(b)) if digit?(a) and digit?(b) -> {
+          @read_buffer.clear
+          val = parse_digit(val, a)
+          val = parse_digit(val, b)
+        }
+        case _ -> throw invalid_syntax
+      }
+    }
+
+    Result.Ok(val)
+  }
+
+  fn inline mut read_byte -> Result[Int, uni Error] {
+    try read_bytes(1)
+    Result.Ok(@read_buffer.pop.get)
+  }
+
+  fn inline mut read_terminator -> Result[Nil, uni Error] {
+    match try read_byte {
+      case CR -> read_lf
+      case _ -> Result.Error(invalid_syntax)
+    }
+  }
+
+  fn inline mut read_lf -> Result[Nil, uni Error] {
+    match try read_byte {
+      case LF -> Result.Ok(nil)
+      case _ -> Result.Error(invalid_syntax)
+    }
+  }
+
+  fn inline mut write[B: Bytes](bytes: ref B) -> Result[Nil, uni Error] {
+    match @stream.write(bytes) {
+      case Ok(_) -> Result.Ok(nil)
+      case Error(ConnectionAborted or ConnectionReset) -> {
+        Result.Error(recover Error.Closed)
+      }
+      case Error(e) -> Result.Error(recover Error.ReadWrite(e))
+    }
+  }
+
+  fn inline mut read_bytes(size: Int) -> Result[Nil, uni Error] {
+    match @stream.read_exact(into: @read_buffer, size: size) {
+      case Ok(_) -> Result.Ok(nil)
+      case Error(EndOfInput or ConnectionAborted or ConnectionReset) -> {
+        Result.Error(recover Error.Closed)
+      }
+      case Error(e) -> Result.Error(recover Error.ReadWrite(e))
+    }
+  }
+
+  fn inline invalid_command(name: String) -> uni Error {
+    recover Error.Soft('the command ${name} is invalid')
+  }
+
+  fn inline invalid_syntax -> uni Error {
+    recover Error.Hard(INVALID_SYNTAX)
+  }
+}

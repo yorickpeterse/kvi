@@ -1,315 +1,453 @@
 import kvi.config (Config)
 import kvi.logger (Logger)
-import kvi.map (Map)
-import kvi.mem (Allocator, Value)
-import kvi.proto.error (Error)
-import kvi.proto.generator (Generator)
-import kvi.proto.parser (Command, Parser)
-import kvi.signal (Signals)
+import kvi.map (Hasher, Key, Map)
+import kvi.resp (Error, Stream)
+import std.clone (Clone)
 import std.net.socket (TcpClient, TcpServer)
-import std.signal (Signal)
+import std.signal (Signal, Signals)
 
-type Server {
-  let @config: Config
-  let @logger: Logger
-  let @shards: Array[Shard]
+# Starts the various server processes.
+#
+# This method blocks the calling process until the database is shut down.
+fn start(config: Config) -> Result[Nil, String] {
+  let logger = Logger.new(config.log_level)
+  let accepters = config.accepters.to_int
+  let num_shards = config.shards.to_int
+  let port = config.port.to_int
+  let shards = Shards.new(num_shards)
+  let hasher = Hasher.new
 
-  fn static new(config: Config) -> Self {
-    let logger = Logger.new(config.log_level)
-    let shards = recover {
-      let len = config.shards.to_int
-      let shards = Array.with_capacity(len)
+  logger.info('starting with ${accepters} accepters and ${num_shards} shards')
 
-      for _ in 0.until(len) { shards.push(Shard.new(recover logger.clone)) }
+  let sockets = try config.ips.iter.try_reduce([], fn (socks, ip) {
+    logger.info('listening on ${ip}:${port}')
 
-      shards
+    let sock = recover {
+      match TcpServer.new(ip, port) {
+        case Ok(v) -> v
+        case Error(e) -> throw 'failed to bind to ${ip}:${port}: ${e}'
+      }
     }
 
-    Server(config: config, logger: logger, shards: shards)
-  }
-
-  # TODO: use logging for errors
-  fn move start -> Result[Nil, String] {
-    let accepters = @config.accepters.to_int
-    let shards = @config.shards.to_int
-
-    @logger.info('starting with ${accepters} accepters and ${shards} shards')
-
-    let sockets = try @config.ips.iter.try_reduce([], fn (socks, ip) {
-      let port = @config.port.to_int
-
-      @logger.info('listening on ${ip}:${port}')
-
+    for _ in 0.until(accepters) {
       let sock = recover {
-        match TcpServer.new(ip, port) {
+        match sock.try_clone {
           case Ok(v) -> v
-          case Error(e) -> throw 'failed to bind to ${ip}:${port}: ${e}'
+          case Error(e) -> throw 'failed to clone a accepter socket: ${e}'
         }
       }
 
-      let mut i = 0
+      let logger = recover logger.clone
+      let shards = recover shards.clone
 
-      while i < accepters {
-        let sock = recover {
-          match sock.try_clone {
-            case Ok(v) -> v
-            case Error(e) -> throw 'failed to clone a listener socket: ${e}'
-          }
-        }
-
-        Accepter.new(@config, recover @logger.clone, sock).run
-        i += 1
-      }
-
-      socks.push(recover sock)
-      Result.Ok(socks)
-    })
-
-    let signals = Signals.new
-
-    signals.add(Signal.Interrupt)
-    signals.add(Signal.Terminate)
-    signals.add(Signal.Quit)
-
-    loop {
-      match signals.wait {
-        case Interrupt or Terminate -> {
-          @logger.info('shutting down gracefully')
-          break
-        }
-        case _ -> return Result.Ok(nil)
-      }
+      Accepter.new(logger, sock, shards, hasher.clone).run
     }
 
-    # Shutting down the sockets wakes up any sleeping accepter processes,
-    # allowing them to shut down cleanly without accepting new connections.
-    for s in sockets { let _ = s.socket.shutdown }
+    socks.push(recover sock)
+    Result.Ok(socks)
+  })
 
-    # Wait for any pending log data to be written, otherwise we might lose that
-    # information.
-    @logger.flush
+  # These are the signals we're explicitly interested in. All other signals
+  # are ignored.
+  let signals = Signals.new
 
-    Result.Ok(nil)
+  signals.add(Signal.Interrupt)
+  signals.add(Signal.Terminate)
+  signals.add(Signal.Quit)
+
+  loop {
+    match signals.wait {
+      case Interrupt or Terminate -> {
+        logger.info('shutting down gracefully')
+        break
+      }
+      case _ -> return Result.Ok(nil)
+    }
   }
+
+  # Shutting down the sockets wakes up any sleeping accepter processes,
+  # allowing them to shut down cleanly without accepting new connections.
+  for s in sockets { let _ = s.socket.shutdown }
+
+  # Wait for any pending log data to be written, otherwise we might lose that
+  # information.
+  logger.flush
+  Result.Ok(nil)
 }
 
+# A process that waits for incoming connections on a TCP socket.
 type async Accepter {
-  let @config: Config
+  # The logger to use for log messages produced by this process and the
+  # processes for each individual connection.
   let @logger: Logger
+
+  # The socket to listen on for incoming connections.
   let @socket: TcpServer
 
+  # The list of shards to give to each connection.
+  let @shards: Shards
+
+  # The hasher to give to each connection.
+  let @hasher: Hasher
+
   fn static new(
-    config: ref Config,
     logger: uni Logger,
     socket: uni TcpServer,
+    shards: uni Shards,
+    hasher: Hasher,
   ) -> Accepter {
-    Accepter(config: recover config.clone, logger: logger, socket: socket)
+    Accepter(logger: logger, socket: socket, shards: shards, hasher: hasher)
   }
 
   fn async mut run {
     loop {
-      let sock = recover {
+      let stream = recover {
         match @socket.accept {
-          case Ok(v) -> v
+          case Ok(v) -> Stream.new(v)
           # We may encounter this error if the server is being shut down in
           # response to e.g. a SIGINT signal.
           case Error(InvalidArgument) -> break
           case Error(e) -> {
-            @logger.debug('failed to accept a new connection: ${e}')
+            @logger.error('failed to accept a new connection: ${e}')
             next
           }
         }
       }
 
-      Connection.new(recover @logger.clone).run(sock)
+      # Getting the peer address may fail if the socket disconnects at this
+      # point. As such we'll just ignore such connections.
+      let label = match stream.stream.peer_address {
+        case Ok({ @ip = ip, @port = port }) -> '${ip}:${port}'
+        case Error(_) -> next
+      }
+
+      let logger = recover @logger.with_label(label)
+      let shards = recover @shards.clone
+
+      logger.info('established new connection')
+      Connection.new(logger, shards, @hasher.clone).resume(stream)
     }
   }
 }
 
+# A process that represents a single connection between the server and a client.
 type async Connection {
+  # The logger dedicated to this connection.
   let @logger: Logger
-  let @buffer: ByteArray
 
-  fn static new(logger: uni Logger) -> Connection {
-    Connection(logger: logger, buffer: recover ByteArray.new)
+  # The list of shards to use for operations.
+  let @shards: Shards
+
+  # The hasher to use for generating hash codes and determining what shard to
+  # use for a certain key.
+  let @hasher: Hasher
+
+  fn static new(
+    logger: uni Logger,
+    shards: uni Shards,
+    hasher: Hasher,
+  ) -> Connection {
+    Connection(logger: logger, shards: shards, hasher: hasher)
   }
 
-  fn async mut run(socket: uni TcpClient) {
-    let socket = recover {
-      let socket = recover socket
-
-      # TODO: a pipeline may include multiple commands, each needing to act on a
-      # different shard. How do we handle that?
-      #
-      # Treat this as a message, which in turn consists of N commands. A
-      # dedicated Message type is used to track the number of remaining
-      # commands. We need to store the pending message somewhere so we can
-      # resume it.
-      match run_pipeline(socket) {
-        case Ok(_) -> {
-          # TODO: act upon request
-        }
-        case Error(Closed) -> {
-          @logger.debug('client disconnected')
-          return
-        }
-        case Error(Read(e)) -> {
-          @logger.debug('disconnecting due to IO error: ${e}')
-          return
-        }
-        case Error(e) -> {
-          let _ = socket.write('-ERR ${e}\r\n')
-          let _ = socket.shutdown
-
-          @logger.debug(e.to_string)
-          return
-        }
-      }
-
-      socket
-    }
-
-    run(socket)
-  }
-
-  fn mut run_pipeline(socket: mut TcpClient) -> Result[Nil, Error] {
-    let pipe = try Pipeline.new(socket, @buffer)
-
+  # Starts or resumes a connection.
+  #
+  # This message reads the next command in the pipeline (automatically starting
+  # a new one if needed) and handles it accordingly.
+  fn async mut resume(stream: uni Stream[TcpClient]) {
     loop {
-      let cmd = match pipe.next_command {
-        case Some(Ok(v)) -> v
-        case None -> break
-        case Some(Error(InvalidCommand(n))) -> {
-          @logger.debug("rejecting invalid command '${n}'")
-
-          let _ = socket.write('-ERR the command is invalid\r\n')
-
-          # If a command is invalid/unsupported it may be followed by a sub
-          # command and/or arguments. We need to skip those.
-          try pipe.skip_remaining
-          break
-        }
-        case Some(Error(e)) -> throw e
+      let cmd = match stream.read_pipeline_command {
+        case Ok(v) -> v
+        case Error(e) -> return error(stream, e)
       }
 
       match cmd {
         case Hello -> {
-          match try pipe.string_argument {
-            case '3' -> {
-              # TODO: clean this up, this is ugly
-              # TODO: include actual version number
-              let gen = Generator.new
-
-              gen.map(3)
-              gen.bulk_string('server')
-              gen.bulk_string('kvi')
-              gen.bulk_string('version')
-              gen.bulk_string('TODO')
-              gen.bulk_string('proto')
-              gen.int(3)
-
-              let _ = socket.write(gen.into_string)
+          match stream.read_pipeline_string {
+            case Ok('3') -> {
+              match stream.write_hello_response {
+                case Ok(_) -> {}
+                case Error(e) -> return error(stream, e)
+              }
             }
-            case n -> {
-              @logger.debug('rejected unsupported protocol version ${n}')
-              throw Error.InvalidVersion
+            case Ok(v) -> {
+              let e = recover Error.Hard("unsupported protocol version '${v}'")
+
+              return error(stream, e)
             }
+            case Error(e) -> return error(stream, e)
           }
+
+          # HELLO commands are handled by this process, so we don't break out of
+          # the loop and instead wait for another command on the next iteration.
         }
         case Get -> {
-          let key = try pipe.string_argument
+          match stream.read_key(@hasher) {
+            case Ok(k) -> @shards.select(@hasher, k.hash).get(self, k, stream)
+            case Error(e) -> error(stream, e)
+          }
 
-          # TODO: implement
-          @logger.debug('GET ${key}')
-
-          let _ = socket.write('$-1\r\n')
+          return
         }
         case Set -> {
-          # TODO
+          match stream.read_key(@hasher) {
+            case Ok(k) -> @shards.select(@hasher, k.hash).set(self, k, stream)
+            case Error(e) -> error(stream, e)
+          }
+
+          return
         }
         case Delete -> {
-          # TODO
+          match stream.read_key(@hasher) {
+            case Ok(k) -> {
+              @shards.select(@hasher, k.hash).delete(self, k, stream)
+            }
+            case Error(e) -> error(stream, e)
+          }
+
+          return
         }
         case Keys -> {
-          # TODO
+          let shards = recover @shards.to_array
+          let keys = recover []
+          let shard = shards.pop.get
+
+          shard.keys(self, stream, shards, keys)
+          return
         }
       }
     }
-
-    Result.Ok(nil)
-  }
-}
-
-type Pipeline {
-  let mut @remaining: Int
-  let @parser: Parser[mut TcpClient]
-
-  fn static new(
-    socket: mut TcpClient,
-    buffer: mut ByteArray,
-  ) -> Result[Pipeline, Error] {
-    let parser = Parser.new(socket, buffer)
-    let rem = try parser.array
-
-    Result.Ok(Pipeline(remaining: rem, parser: parser))
   }
 
-  fn mut next_command -> Option[Result[Command, Error]] {
-    if @remaining > 0 {
-      @remaining -= 1
-      Option.Some(@parser.command)
-    } else {
-      Option.None
+  # Writes all keys produced by the shards to the stream.
+  #
+  # This message is to be sent by the last shard to produce its set of keys.
+  fn async mut write_keys(
+    stream: uni Stream[TcpClient],
+    keys: uni Array[ByteArray],
+  ) {
+    let keys = recover keys
+
+    match stream.write_array(keys.size) {
+      case Ok(_) -> {}
+      case Error(e) -> return error(stream, e)
+    }
+
+    for key in keys {
+      match stream.write_bulk_string(key) {
+        case Ok(_) -> {}
+        case Error(e) -> return error(stream, e)
+      }
+    }
+
+    resume(stream)
+  }
+
+  # Handles an error produced by a stream.
+  #
+  # Error handling is generally the same across the different parts of the
+  # database: log a message, maybe report the message to the client, and maybe
+  # disconnect the connection. We centralize this logic here such that we don't
+  # have to duplicate it in various places.
+  #
+  # For IO and hard errors, this method terminates the connection simply by not
+  # scheduling any new messages. For soft errors the connection is resumed after
+  # reporting the error.
+  fn async mut error(stream: uni Stream[TcpClient], error: uni Error) {
+    match error {
+      # IO errors result in a disconnect because we can't meaningfully continue
+      # after encountering one (the client might be disconnected, the state
+      # might be messed up, etc).
+      case ReadWrite(e) -> @logger.debug(e.to_string)
+      case Closed -> @logger.info('client disconnected')
+      case Hard(e) -> {
+        let _ = stream.write_error(e)
+
+        @logger.error(e)
+      }
+      case Soft(e) -> {
+        let _ = stream.write_error(e)
+
+        @logger.error(e)
+        resume(stream)
+      }
     }
   }
+}
 
-  fn mut string_argument -> Result[String, Error] {
-    @remaining -= 1
-    @parser.string_literal
+# A collection of shards to use for storing data.
+type inline Shards {
+  let @shards: Array[Shard]
+
+  # Returns a list of `size` shards.
+  fn static new(size: Int) -> Shards {
+    let shards = Array.with_capacity(size)
+
+    for _ in 0.until(size) { shards.push(Shard.new) }
+
+    Shards(shards)
   }
 
-  fn mut skip_remaining -> Result[Nil, Error] {
-    @parser.skip_bulk_strings(@remaining := 0)
+  # Returns the `Shard` to use for the given hash code.
+  #
+  # The shard is chosen using [rendezvous
+  # hashing](https://en.wikipedia.org/wiki/Rendezvous_hashing).
+  fn select(hasher: Hasher, hash: Int) -> Shard {
+    let mut shard = 0
+    let mut max = 0
+    let mut idx = 0
+    let len = @shards.size
+
+    while idx < len {
+      let shard_hash = hasher.hash((idx, hash))
+
+      if shard_hash > max {
+        shard = idx
+        max = shard_hash
+      }
+
+      idx += 1
+    }
+
+    # Since we're guaranteed to always have a single shard (due to the
+    # `Config` type requiring at least a single shard), this panic never gets
+    # triggered.
+    @shards.get(shard).or_panic
+  }
+
+  fn to_array -> Array[Shard] {
+    # We can't just clone the `Array` because `Shard` is a process and processes
+    # can't implement traits, so we have to clone the references manually.
+    #
+    # Because process references use atomic reference counting, these "clones"
+    # just increment the reference count of each process.
+    let val = Array.with_capacity(@shards.size)
+
+    for shard in @shards.iter { val.push(shard) }
+
+    val
   }
 }
 
-type async Shard {
-  let @allocator: Allocator
-  let @keys: Map[ByteArray, Value]
-  let @logger: Logger
+impl Clone for Shards {
+  fn pub clone -> Self {
+    Shards(to_array)
+  }
+}
 
-  fn static new(logger: uni Logger) -> Self {
-    Shard(
-      allocator: recover Allocator.new,
-      keys: recover Map.new,
-      logger: logger,
-    )
+# A process that stores a list of key-value pairs.
+#
+# Rather than storing data in a single place, each Shard owns a chunk of
+# key-value pairs. The assignment of pairs to shards is determined using
+# rendezvous hashing. This approach allows for concurrent access to different
+# key-value pairs.
+type async Shard {
+  # The key-value pairs stored in this shard.
+  #
+  # We only support a few basic operations on string key/value pairs, so we only
+  # need a single mapping. In a real database we'd likely have different data
+  # structures for different types of keys.
+  let @keys: Map[ByteArray, ByteArray]
+
+  fn static new -> Self {
+    Shard(keys: recover Map.new)
   }
 
+  # Assigns a key a new value.
+  #
+  # The `connection` argument is the connection that requested the operation,
+  # and will be resumed upon success.
+  #
+  # The `key` argument is the key (name) as produced by the connection.
+  #
+  # The `stream` argument is used for reading and writing RESP messages.
   fn async mut set(
     connection: Connection,
-    socket: uni TcpClient,
-    key: uni ByteArray,
+    key: uni Key[ByteArray],
+    stream: uni Stream[TcpClient],
   ) {
-    let socket = recover {
-      let socket = recover socket
-
-      # TODO: read the size, skip the \r\n, then read the data into the
-      # allocator
-
-      socket
+    match stream.read_bulk_string_value {
+      case Ok(v) -> @keys.set(recover key, v)
+      case Error(e) -> return connection.error(stream, e)
     }
 
-    # TODO: implement
-    connection.run(socket)
+    match stream.write_ok {
+      case Ok(_) -> connection.resume(stream)
+      case Error(e) -> connection.error(stream, e)
+    }
   }
 
+  # Retrieves the value of a key.
+  #
+  # The `connection` argument is the connection that requested the operation,
+  # and will be resumed upon success.
+  #
+  # The `key` argument is the key (name) as produced by the connection.
+  #
+  # The `stream` argument is used for reading and writing RESP messages.
   fn async mut get(
     connection: Connection,
-    socket: uni TcpClient,
-    key: uni ByteArray,
+    key: uni Key[ByteArray],
+    stream: uni Stream[TcpClient],
   ) {
-    # TODO: implement
-    connection.run(socket)
+    let res = match @keys.get(recover key) {
+      case Some(v) -> stream.write_bulk_string(v)
+      case _ -> stream.write_nil
+    }
+
+    match res {
+      case Ok(_) -> connection.resume(stream)
+      case Error(e) -> connection.error(stream, e)
+    }
+  }
+
+  # Deletes a key-value pair.
+  #
+  # The `connection` argument is the connection that requested the operation,
+  # and will be resumed upon success.
+  #
+  # The `key` argument is the key (name) as produced by the connection.
+  #
+  # The `stream` argument is used for reading and writing RESP messages.
+  fn async mut delete(
+    connection: Connection,
+    key: uni Key[ByteArray],
+    stream: uni Stream[TcpClient],
+  ) {
+    let num = @keys.remove(recover key).some?.to_int
+
+    match stream.write_int(num) {
+      case Ok(_) -> connection.resume(stream)
+      case Error(e) -> connection.error(stream, e)
+    }
+  }
+
+  # Collects the keys of the current shrad into the `keys` array.
+  #
+  # Once all keys are collected, this method schedules the next shard in the
+  # list for processing. Once all shards finish collecting their keys, the
+  # result is sent back to the `Connection` process.
+  #
+  # The `connection` argument is the connection that requested the operation,
+  # and will be resumed upon collecting all keys across all shards.
+  #
+  # The `stream` argument is used for reading and writing RESP messages.
+  #
+  # The `shards` argument is an array of _remaining_ shards for which to collect
+  # keys.
+  #
+  # The `keys` argument is an array of all the keys across all shards.
+  fn async mut keys(
+    connection: Connection,
+    stream: uni Stream[TcpClient],
+    shards: uni Array[Shard],
+    keys: uni Array[ByteArray],
+  ) {
+    for key in @keys.keys { keys.push(recover key.clone) }
+
+    match shards.pop {
+      case Some(s) -> s.keys(connection, stream, shards, keys)
+      case _ -> connection.write_keys(stream, keys)
+    }
   }
 }
