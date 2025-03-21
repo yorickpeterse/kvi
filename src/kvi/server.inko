@@ -434,7 +434,7 @@ type async Shard {
   # keys.
   #
   # The `keys` argument is an array of all the keys across all shards.
-  fn async mut keys(
+  fn async keys(
     connection: Connection,
     stream: uni Stream[TcpClient],
     shards: uni Array[Shard],
