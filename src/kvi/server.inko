@@ -295,18 +295,15 @@ type inline Shards {
   fn select(hasher: Hasher, hash: Int) -> Shard {
     let mut shard = 0
     let mut max = 0
-    let mut idx = 0
     let len = @shards.size
 
-    while idx < len {
+    for idx in 0.until(len) {
       let shard_hash = hasher.hash((idx, hash))
 
       if shard_hash > max {
         shard = idx
         max = shard_hash
       }
-
-      idx += 1
     }
 
     # Since we're guaranteed to always have a single shard (due to the

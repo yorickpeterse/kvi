@@ -11,7 +11,9 @@ fn setup -> Result[TcpClient, IoError] {
   let server = recover try TcpServer.new(IpAddress.v4(0, 0, 0, 0), port: 0)
   let addr = try server.local_address
   let shards = recover Shards.new(2)
-  let hasher = Hasher.new
+
+  # We use a fixed set of keys here to get consistent results between test runs.
+  let hasher = Hasher.with_keys(1, 0)
 
   Accepter.new(logger, server, shards, hasher).run
   TcpClient.new([addr.ip], addr.port)
