@@ -6,6 +6,10 @@ Redis/Dragonfly/etc, but rather to show what a reasonably complex Inko program
 looks like to those potentially interested in using Inko. In addition, we may
 use it for benchmarking and testing new Inko features.
 
+More details about the design and impact of this project are found in the
+article [The design and impact of building a simple key-value database in
+Inko](https://yorickpeterse.com/articles/the-design-and-impact-of-building-a-simple-key-value-database-in-inko/).
+
 ## Requirements
 
 - Inko `main`, at least for the time being
