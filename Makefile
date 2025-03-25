@@ -7,13 +7,13 @@ DATADIR := ${PREFIX}/share
 	@test $${VERSION?The VERSION variable must be set}
 
 build:
-	inko build -o ./build/${NAME}
+	inko build --release
 
 clean:
 	rm -rf dep build
 
 install: build
-	install -D --mode=755 build/${NAME} ${DESTDIR}${BINDIR}/${NAME}
+	install -D --mode=755 build/release/${NAME} ${DESTDIR}${BINDIR}/${NAME}
 
 uninstall:
 	rm --force ${BINDIR}/${NAME}
