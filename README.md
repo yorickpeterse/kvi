@@ -22,6 +22,23 @@ located at `./build/release/main`.
 
 To run the tests, run `inko test` in the root directory of this project.
 
+## Docker
+
+A [Docker](https://www.docker.com/) image is provided to make running the server
+easier:
+
+```bash
+docker pull ghcr.io/yorickpeterse/kvi:main
+docker run kvi:main kvi
+```
+
+[Podman](http://podman.io/) is also supported:
+
+```bash
+podman pull ghcr.io/yorickpeterse/kvi:main
+podman run kvi:main kvi
+```
+
 ## License
 
 All source code in this repository is licensed under the Mozilla Public License
