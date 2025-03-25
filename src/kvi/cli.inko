@@ -11,7 +11,7 @@ fn show_help[W: mut + Write](options: ref Options, output: mut W) {
     .usage('[OPTIONS]')
     .section('Options')
     .options(options)
-    .to_string
+    .into_string
 
   let _ = output.write(help)
 }
