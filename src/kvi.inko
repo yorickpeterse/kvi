@@ -1,28 +1,18 @@
 import kvi.config (Config)
 import kvi.server (start)
 import std.env (arguments)
-import std.optparse (Help, Options)
+import std.optparse (Options)
 import std.stdio (Stderr, Stdout)
 import std.sys (exit)
 
 let VERSION = '0.1.0'
 
-fn show_help(options: ref Options, output: mut Stdout) {
-  let help = Help
-    .new('kvi')
-    .usage('[OPTIONS]')
-    .section('Options')
-    .options(options)
-    .into_string
-
-  let _ = output.write(help)
-}
-
 fn run -> Result[Nil, String] {
   let arguments = arguments
   let stdout = Stdout.new
-  let opts = Options.new
+  let opts = Options.new('kvi')
 
+  opts.description = 'A simple key-value database using the Redis serialization protocol.'
   opts.flag('h', 'help', 'Show this help message')
   opts.flag('v', 'version', 'Show the version')
   opts.multiple('i', 'ip', 'IP', 'The IP addresses to bind to')
@@ -42,7 +32,8 @@ fn run -> Result[Nil, String] {
   }
 
   if matches.contains?('help') {
-    show_help(opts, stdout)
+    let _ = stdout.write(opts.to_string)
+
     return Result.Ok(nil)
   }
 
