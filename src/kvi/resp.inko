@@ -3,7 +3,7 @@ import kvi.map (Hasher, Key)
 import std.bytes (Bytes)
 import std.cmp (Equal)
 import std.fmt (Format, Formatter)
-import std.io (Error as IoError, Read, Write)
+import std.io (BufferedReader, Error as IoError, Read, Write)
 import std.string (ToString)
 
 let ADD = 43
@@ -270,7 +270,7 @@ type inline Generator {
 # A type for parsing and generating RESP messages.
 type Stream[T: mut + Read + Write] {
   # The underlying IO stream, typically a socket.
-  let @stream: T
+  let @stream: BufferedReader[T]
 
   # A buffer for reading RESP messages.
   let @read_buffer: ByteArray
@@ -282,8 +282,16 @@ type Stream[T: mut + Read + Write] {
   let mut @remaining: Int
 
   fn static new(stream: T) -> Self {
+    # The default buffer size of 8 KiB is way bigger than we need in most cases,
+    # so we use a smaller (but still reasonable) buffer size.
+    let reader = BufferedReader.with_capacity(stream, size: 128)
+
+    # Since we're dealing with TCP streams (which don't reach EOF until they
+    # disconnect) we need to disable exact reads.
+    reader.exact = false
+
     Self(
-      stream: stream,
+      stream: reader,
       read_buffer: ByteArray.new,
       generator: Generator.new,
       remaining: 0,
@@ -459,6 +467,9 @@ type Stream[T: mut + Read + Write] {
 
     match @stream.read_exact(buf, len) {
       case Ok(_) -> try read_terminator
+      case Error(EndOfInput or ConnectionAborted or ConnectionReset) -> {
+        throw recover Error.Closed
+      }
       case Error(e) -> throw recover Error.ReadWrite(e)
     }
 
@@ -510,25 +521,20 @@ type Stream[T: mut + Read + Write] {
     # The minimum number of bytes is three: one for a single digit, and two for
     # \r\n. This means we can read the initial/minimum amount of necessary data
     # in a single call.
-    if initial >= 0 { @read_buffer.push(initial) }
+    let first = if initial >= 0 { initial } else { try read_byte }
 
-    try read_bytes(3 - @read_buffer.size)
-
-    match (@read_buffer.get(0), @read_buffer.get(1), @read_buffer.get(2)) {
-      case (Ok(a), Ok(CR), Ok(LF)) if digit?(a) -> {
-        @read_buffer.clear
+    match (first, try read_byte, try read_byte) {
+      case (a, CR, LF) if digit?(a) -> {
         val = parse_digit(val, a)
         return Result.Ok(val)
       }
-      case (Ok(a), Ok(b), Ok(CR)) if digit?(a) and digit?(b) -> {
-        @read_buffer.clear
+      case (a, b, CR) if digit?(a) and digit?(b) -> {
         val = parse_digit(val, a)
         val = parse_digit(val, b)
         try read_lf
         return Result.Ok(val)
       }
-      case (Ok(a), Ok(b), Ok(c)) if digit?(a) and digit?(b) and digit?(c) -> {
-        @read_buffer.clear
+      case (a, b, c) if digit?(a) and digit?(b) and digit?(c) -> {
         val = parse_digit(val, a)
         val = parse_digit(val, b)
         val = parse_digit(val, c)
@@ -540,21 +546,14 @@ type Stream[T: mut + Read + Write] {
     # otherwise we might read too much. For example, for the input `123\r\n` the
     # above code reads `123`, leaving us with the remaining `\r\n`.
     loop {
-      try read_bytes(2)
-
-      match (@read_buffer.get(0), @read_buffer.get(1)) {
-        case (Ok(CR), Ok(LF)) -> {
-          @read_buffer.clear
-          break
-        }
-        case (Ok(a), Ok(CR)) if digit?(a) -> {
-          @read_buffer.clear
+      match (try read_byte, try read_byte) {
+        case (CR, LF) -> break
+        case (a, CR) if digit?(a) -> {
           val = parse_digit(val, a)
           try read_lf
           break
         }
-        case (Ok(a), Ok(b)) if digit?(a) and digit?(b) -> {
-          @read_buffer.clear
+        case (a, b) if digit?(a) and digit?(b) -> {
           val = parse_digit(val, a)
           val = parse_digit(val, b)
         }
@@ -566,8 +565,13 @@ type Stream[T: mut + Read + Write] {
   }
 
   fn inline mut read_byte -> Result[Int, uni Error] {
-    try read_bytes(1)
-    Result.Ok(@read_buffer.pop.get)
+    match @stream.read_byte {
+      case Ok(Some(v)) -> Result.Ok(v)
+      case Ok(None) or Error(ConnectionAborted or ConnectionReset) -> {
+        Result.Error(recover Error.Closed)
+      }
+      case Error(e) -> Result.Error(recover Error.ReadWrite(e))
+    }
   }
 
   fn inline mut read_terminator -> Result[Nil, uni Error] {
@@ -585,7 +589,7 @@ type Stream[T: mut + Read + Write] {
   }
 
   fn inline mut write[B: Bytes](bytes: ref B) -> Result[Nil, uni Error] {
-    match @stream.write(bytes) {
+    match @stream.inner.write(bytes) {
       case Ok(_) -> Result.Ok(nil)
       case Error(ConnectionAborted or ConnectionReset) -> {
         Result.Error(recover Error.Closed)

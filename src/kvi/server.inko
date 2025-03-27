@@ -101,9 +101,9 @@ type async Accepter {
 
   fn async mut run {
     loop {
-      let stream = recover {
+      let socket = recover {
         match @socket.accept {
-          case Ok(v) -> Stream.new(v)
+          case Ok(v) -> v
           # We may encounter this error if the server is being shut down in
           # response to e.g. a SIGINT signal.
           case Error(InvalidArgument) -> break
@@ -116,11 +116,12 @@ type async Accepter {
 
       # Getting the peer address may fail if the socket disconnects at this
       # point. As such we'll just ignore such connections.
-      let label = match stream.stream.peer_address {
+      let label = match socket.peer_address {
         case Ok({ @ip = ip, @port = port }) -> '${ip}:${port}'
         case Error(_) -> next
       }
 
+      let stream = recover Stream.new(recover socket)
       let logger = recover @logger.with_label(label)
       let shards = recover @shards.clone
 
