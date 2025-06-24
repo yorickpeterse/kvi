@@ -257,7 +257,7 @@ type inline Generator {
     terminator
   }
 
-  fn mut flush_to[T: mut + Read + Write](
+  fn mut flush_to[T: mut + Read[IoError] + Write[IoError]](
     stream: mut Stream[T],
   ) -> Result[Nil, uni Error] {
     let res = stream.write(@buffer)
@@ -268,9 +268,9 @@ type inline Generator {
 }
 
 # A type for parsing and generating RESP messages.
-type Stream[T: mut + Read + Write] {
+type Stream[T: mut + Read[IoError] + Write[IoError]] {
   # The underlying IO stream, typically a socket.
-  let @stream: BufferedReader[T]
+  let @stream: BufferedReader[T, IoError]
 
   # A buffer for reading RESP messages.
   let @read_buffer: ByteArray
@@ -467,10 +467,11 @@ type Stream[T: mut + Read + Write] {
 
     match @stream.read_exact(buf, len) {
       case Ok(_) -> try read_terminator
-      case Error(EndOfInput or ConnectionAborted or ConnectionReset) -> {
+      case Error(EndOfInput) -> throw recover Error.Closed
+      case Error(Read(ConnectionAborted or ConnectionReset)) -> {
         throw recover Error.Closed
       }
-      case Error(e) -> throw recover Error.ReadWrite(e)
+      case Error(Read(e)) -> throw recover Error.ReadWrite(e)
     }
 
     @remaining -= 1
@@ -601,10 +602,11 @@ type Stream[T: mut + Read + Write] {
   fn inline mut read_bytes(size: Int) -> Result[Nil, uni Error] {
     match @stream.read_exact(into: @read_buffer, size: size) {
       case Ok(_) -> Result.Ok(nil)
-      case Error(EndOfInput or ConnectionAborted or ConnectionReset) -> {
+      case Error(EndOfInput) -> Result.Error(recover Error.Closed)
+      case Error(Read(ConnectionAborted or ConnectionReset)) -> {
         Result.Error(recover Error.Closed)
       }
-      case Error(e) -> Result.Error(recover Error.ReadWrite(e))
+      case Error(Read(e)) -> Result.Error(recover Error.ReadWrite(e))
     }
   }
 

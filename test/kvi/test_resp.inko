@@ -14,7 +14,7 @@ type ReaderWriter {
   }
 }
 
-impl Read for ReaderWriter {
+impl Read[IoError] for ReaderWriter {
   fn pub mut read(into: mut ByteArray, size: Int) -> Result[Int, IoError] {
     if @buffer.empty? { return Result.Ok(0) }
 
@@ -36,7 +36,7 @@ impl Read for ReaderWriter {
   }
 }
 
-impl Write for ReaderWriter {
+impl Write[IoError] for ReaderWriter {
   fn pub mut write[B: Bytes](bytes: ref B) -> Result[Nil, IoError] {
     @buffer.append(bytes)
     Result.Ok(nil)
