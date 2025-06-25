@@ -286,10 +286,6 @@ type Stream[T: mut + Read[IoError] + Write[IoError]] {
     # so we use a smaller (but still reasonable) buffer size.
     let reader = BufferedReader.with_capacity(stream, size: 128)
 
-    # Since we're dealing with TCP streams (which don't reach EOF until they
-    # disconnect) we need to disable exact reads.
-    reader.exact = false
-
     Self(
       stream: reader,
       read_buffer: ByteArray.new,
