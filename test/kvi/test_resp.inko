@@ -138,7 +138,7 @@ fn pub tests(t: mut Tests) {
     let key = recover try stream.read_key(hasher)
 
     t.equal(key.name, 'hello'.to_byte_array)
-    t.equal(key.hash, -814240583235389301)
+    t.equal(key.hash, -8692740671575011684)
     t.equal(stream.remaining, 0)
 
     Result.Ok(nil)
