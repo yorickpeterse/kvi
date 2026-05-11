@@ -2,7 +2,7 @@
 import std.clone (Clone)
 import std.cmp (Equal)
 import std.hash (Hash)
-import std.hash.siphash (SipHasher13)
+import std.hash.ahash (Ahasher)
 import std.iter (Stream)
 import std.rand (Random)
 
@@ -25,19 +25,21 @@ fn inline resize_threshold(size: Int) -> Int {
 type copy Hasher {
   let @key0: Int
   let @key1: Int
+  let @key2: Int
+  let @key3: Int
 
   fn static new -> Self {
     let rng = Random.new
 
-    with_keys(rng.int, rng.int)
+    with_keys(rng.int, rng.int, rng.int, rng.int)
   }
 
-  fn static with_keys(key0: Int, key1: Int) -> Self {
-    Self(key0: key0, key1: key1)
+  fn static with_keys(key0: Int, key1: Int, key2: Int, key3: Int) -> Self {
+    Self(key0: key0, key1: key1, key2: key2, key3: key3)
   }
 
   fn hash[H: Hash](input: ref H) -> Int {
-    let hasher = SipHasher13.new(@key0, @key1)
+    let hasher = Ahasher.new(@key0, @key1, @key2, @key3)
 
     input.hash(hasher)
     hasher.finish
@@ -46,7 +48,7 @@ type copy Hasher {
 
 impl Clone for Hasher {
   fn pub clone -> Self {
-    Self(key0: @key0, key1: @key1)
+    Self(key0: @key0, key1: @key1, key2: @key2, key3: @key3)
   }
 }
 

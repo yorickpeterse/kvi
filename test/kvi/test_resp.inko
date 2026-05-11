@@ -130,7 +130,7 @@ fn pub tests(t: mut Tests) {
   })
 
   t.ok('Stream.read_key', fn (t) {
-    let hasher = Hasher.with_keys(0, 0)
+    let hasher = Hasher.with_keys(0, 0, 0, 0)
     let stream = stream('*1\r\n$5\r\nhello\r\n')
 
     t.equal(stream.start_pipeline, Result.Ok(nil))
@@ -138,7 +138,7 @@ fn pub tests(t: mut Tests) {
     let key = recover try stream.read_key(hasher)
 
     t.equal(key.name, 'hello'.to_byte_array)
-    t.equal(key.hash, -8692740671575011684)
+    t.equal(key.hash, -3252133340714348213)
     t.equal(stream.remaining, 0)
 
     Result.Ok(nil)

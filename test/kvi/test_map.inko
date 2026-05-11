@@ -1,9 +1,9 @@
 import kvi.map (INITIAL_CAPACITY, Key, Map, resize_threshold)
-import std.hash.siphash (SipHasher13)
+import std.hash.ahash (Ahasher)
 import std.test (Tests)
 
 fn key(name: String) -> Key[String] {
-  let hasher = SipHasher13.new(0, 0)
+  let hasher = Ahasher.new(0, 0, 0, 0)
 
   name.hash(hasher)
   key_with_hash(name, hasher.finish)

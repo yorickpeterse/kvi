@@ -13,7 +13,7 @@ fn setup -> Result[TcpClient, IoError] {
   let shards = recover Shards.new(2)
 
   # We use a fixed set of keys here to get consistent results between test runs.
-  let hasher = Hasher.with_keys(1, 0)
+  let hasher = Hasher.with_keys(1, 0, 0, 0)
 
   Accepter.new(logger, server, shards, hasher).run
   TcpClient.new([addr.ip], addr.port)
